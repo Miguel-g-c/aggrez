@@ -3,6 +3,8 @@ package org.openlca.aggrez;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.Objects;
 
 import org.openlca.core.database.Derby;
@@ -24,6 +26,9 @@ public class Main {
     var target = targetFileOf(args);
     if (target == null)
       return;
+    var referenceDate = referenceDateOf(args);
+    if (referenceDate == null)
+      return;
     var dbDir = extractDatabase();
     if (dbDir == null)
       return;
@@ -38,6 +43,8 @@ public class Main {
       log.info("aggregating processes");
       // TODO
       log.info("transmitting processes");
+      // TODO
+      log.info("transmitting global parameters");
       // TODO
       log.info("updating product systems");
       // TODO
@@ -105,4 +112,12 @@ public class Main {
     return file;
   }
 
+  private static OffsetDateTime referenceDateOf(String[] args) {
+    try {
+      return OffsetDateTime.parse(args[2]);
+    } catch (DateTimeParseException e) {
+      log.error("failed to parse reference date", e);
+      return null;
+    }
+  }
 }
