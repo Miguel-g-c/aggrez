@@ -161,8 +161,10 @@ public class Main {
     // import data
     log.info("transmit reference data");
     transmitCategories(inputDb, targetDb);
-    transmitUnitGroups(inputDb, targetDb);
-    transmitFlowProperties(inputDb, targetDb);
+    var requirePropertyUpdate = new HashMap<String, UnitGroup>();
+    transmitUnitGroups(inputDb, targetDb, requirePropertyUpdate);
+    transmit(FlowProperty.class, inputDb, targetDb);
+    updateUnitGroups(targetDb, requirePropertyUpdate);
 
     log.info("transmit flows");
     transmit(Flow.class, inputDb, targetDb);
@@ -215,27 +217,36 @@ public class Main {
 
   private static void transmitCategories(Derby source, Derby target) {
     var sourceDao = new CategoryDao(source);
+    var targetDao = new CategoryDao(target);
     var sourceRoots = sourceDao.getRootCategories();
     for (var sourceRoot : sourceRoots) {
-      target.insert(sourceRoot);
+      log.trace("Transmitting Categories {}", sourceRoot.refId);
+      targetDao.insert(sourceRoot);
     }
   }
 
-  private static void transmitUnitGroups(Derby source, Derby target) {
+  private static void transmitUnitGroups(Derby source, Derby target, HashMap<String, UnitGroup> requireUpdate) {
     var sourceDao = new UnitGroupDao(source);
     var targetDao = new UnitGroupDao(target);
     var sourceUnitGroups = sourceDao.getAll();
     for (var sourceUnitGroup : sourceUnitGroups) {
-      targetDao.insert(sourceUnitGroup);
+      var targetUnitGroup = sourceUnitGroup.copy();
+      targetUnitGroup.refId = sourceUnitGroup.refId;
+      if (sourceUnitGroup.defaultFlowProperty != null) {
+        targetUnitGroup.defaultFlowProperty = null;
+        requireUpdate.put(sourceUnitGroup.defaultFlowProperty.refId, targetUnitGroup);
+      }
+      targetDao.insert(targetUnitGroup);
     }
   }
 
-  private static void transmitFlowProperties(Derby source, Derby target) {
-    var sourceDao = new FlowPropertyDao(source);
-    var targetDao = new FlowPropertyDao(target);
-    var sourceUnitGroups = sourceDao.getAll();
-    for (var sourceUnitGroup : sourceUnitGroups) {
-      targetDao.insert(sourceUnitGroup);
+  private static void updateUnitGroups(Derby target, HashMap<String, UnitGroup> requireUpdate) {
+    var propertyDao = new FlowPropertyDao(target);
+    var unitGroupDao = new UnitGroupDao(target);
+    for (String refId : requireUpdate.keySet()) {
+      var unitGroup = requireUpdate.get(refId);
+      unitGroup.defaultFlowProperty = propertyDao.getForRefId(refId);
+      unitGroupDao.update(unitGroup);
     }
   }
 
@@ -250,6 +261,7 @@ public class Main {
       return null;
     }
   }
+
   private static File createDatabase() {
     try {
       var dbDir = Files.createTempDirectory("_aggrez_").toFile();
@@ -263,7 +275,7 @@ public class Main {
 
   private static File inputFileOf(String arg) {
     if (!arg.toLowerCase().endsWith(".zolca"))
-        return null;
+      return null;
     var file = new File(arg);
     if (!file.exists()) {
       log.error("input file '{}' doesn't exist", file);
