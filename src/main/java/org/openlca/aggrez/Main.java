@@ -8,9 +8,10 @@ import java.util.*;
 
 import org.openlca.core.database.Derby;
 import org.openlca.core.database.upgrades.Upgrades;
-import org.openlca.core.math.SystemCalculator;
+import org.openlca.core.math.CalculationQueue;
 import org.openlca.core.model.*;
 import org.openlca.core.model.Process;
+import org.openlca.core.results.SimpleResult;
 import org.openlca.core.results.SystemProcess;
 import org.openlca.util.Dirs;
 import org.slf4j.Logger;
@@ -48,21 +49,33 @@ public class Main {
 
     // aggregate processes
     log.info("aggregate processes");
+    var calculationQueue = new CalculationQueue(inputDb, 16);
+    var calcToSetupMap = new HashMap<String, CalculationSetup>();
     var unitToSystemMap = new HashMap<String, Process>();
     var modifiedUnitProcesses = new ArrayList<Process>();
-    var calculator = new SystemCalculator(inputDb);
     var processes = inputDb.allOf(Process.class);
     for (var process : processes) {
       if (process.lastChange > referenceDate.getTime()) {
         modifiedUnitProcesses.add(process);
         continue;
       }
-      log.trace("aggregate process: {}", process.refId);
       var setup = CalculationSetup.simple(process);
-      var results = calculator.calculateSimple(setup);
+      var calcState = calculationQueue.schedule(setup);
+      calcToSetupMap.put(calcState.id(), setup);
+    }
+    for (var calcId : calcToSetupMap.keySet()) {
+      var isReady = false;
+      CalculationQueue.State state = null;
+      while (!isReady) {
+        state = calculationQueue.get(calcId);
+        isReady = state.isReady();
+      }
+      var results = (SimpleResult) state.result();
+      var process = calcToSetupMap.get(calcId).process();
+      log.trace("aggregate process: {}", process.refId);
       var systemProcess = SystemProcess.create(
               inputDb,
-              setup,
+              calcToSetupMap.get(calcId),
               results,
               process.name
       );
