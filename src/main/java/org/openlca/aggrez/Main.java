@@ -6,6 +6,7 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+import org.openlca.core.database.CategoryDao;
 import org.openlca.core.database.Derby;
 import org.openlca.core.database.upgrades.Upgrades;
 import org.openlca.core.math.CalculationQueue;
@@ -157,6 +158,7 @@ public class Main {
 
     // import data
     log.info("transmit reference data");
+    transmitCategories(inputDb, targetDb);
     transmit(UnitGroup.class, inputDb, targetDb);
     transmit(FlowProperty.class, inputDb, targetDb);
 
@@ -199,13 +201,21 @@ public class Main {
     }
   }
 
-  private static <T extends RootEntity> void transmit(Class<T> entities, Derby from, Derby to) {
-    var inputEntities = from.allOf(entities);
+  private static <T extends RootEntity> void transmit(Class<T> entities, Derby source, Derby target) {
+    var inputEntities = source.allOf(entities);
     if (inputEntities.isEmpty())
       return;
     for (var entity : inputEntities) {
       log.trace("Transmitting " + entities.getName() + " {}", entity.refId);
-      to.insert(entity);
+      target.insert(entity);
+    }
+  }
+
+  private static void transmitCategories(Derby source, Derby target) {
+    var sourceDao = new CategoryDao(source);
+    var sourceRoots = sourceDao.getRootCategories();
+    for (var sourceRoot : sourceRoots) {
+      target.insert(sourceRoot);
     }
   }
 
