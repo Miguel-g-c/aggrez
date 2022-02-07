@@ -8,6 +8,8 @@ import java.util.*;
 
 import org.openlca.core.database.CategoryDao;
 import org.openlca.core.database.Derby;
+import org.openlca.core.database.FlowPropertyDao;
+import org.openlca.core.database.UnitGroupDao;
 import org.openlca.core.database.upgrades.Upgrades;
 import org.openlca.core.math.CalculationQueue;
 import org.openlca.core.model.*;
@@ -159,8 +161,8 @@ public class Main {
     // import data
     log.info("transmit reference data");
     transmitCategories(inputDb, targetDb);
-    transmit(UnitGroup.class, inputDb, targetDb);
-    transmit(FlowProperty.class, inputDb, targetDb);
+    transmitUnitGroups(inputDb, targetDb);
+    transmitFlowProperties(inputDb, targetDb);
 
     log.info("transmit flows");
     transmit(Flow.class, inputDb, targetDb);
@@ -216,6 +218,24 @@ public class Main {
     var sourceRoots = sourceDao.getRootCategories();
     for (var sourceRoot : sourceRoots) {
       target.insert(sourceRoot);
+    }
+  }
+
+  private static void transmitUnitGroups(Derby source, Derby target) {
+    var sourceDao = new UnitGroupDao(source);
+    var targetDao = new UnitGroupDao(target);
+    var sourceUnitGroups = sourceDao.getAll();
+    for (var sourceUnitGroup : sourceUnitGroups) {
+      targetDao.insert(sourceUnitGroup);
+    }
+  }
+
+  private static void transmitFlowProperties(Derby source, Derby target) {
+    var sourceDao = new FlowPropertyDao(source);
+    var targetDao = new FlowPropertyDao(target);
+    var sourceUnitGroups = sourceDao.getAll();
+    for (var sourceUnitGroup : sourceUnitGroups) {
+      targetDao.insert(sourceUnitGroup);
     }
   }
 
