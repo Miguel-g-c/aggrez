@@ -23,16 +23,47 @@ public class Main {
 
   public static void main(String[] args) {
 
+    // init default args
+    File input = null;
+    File target = null;
+    long referenceDate = 0;
+    int threads = 2;
+
+    // parse the provided args
+    String flag = null;
+    for (var arg : args) {
+      if (arg.startsWith("-")) {
+        flag = arg;
+        continue;
+      }
+      if (flag == null)
+        continue;
+      switch (flag) {
+        case "-src":
+          input = inputFileOf(arg);
+          if (input == null)
+            return;
+          break;
+        case "-dest":
+          target = targetFileOf(arg);
+          if (target == null)
+            return;
+          break;
+        case "-from":
+          referenceDate = referenceDateOf(arg);
+          break;
+        case "-threads":
+          try {
+            threads = Integer.parseInt(arg);
+          } catch (NumberFormatException e) {
+            log.error("invalid number of threads provided: {}", arg);
+            return;
+          }
+          break;
+      }
+    }
+
     // collect input database and create the target database
-    var input = inputFileOf(args);
-    if (input == null)
-      return;
-    var target = targetFileOf(args);
-    if (target == null)
-      return;
-    var referenceDate = referenceDateOf(args);
-    if (referenceDate == null)
-      return;
     var inputDbDir = extractDatabase(input);
     if (inputDbDir == null)
       return;
@@ -49,13 +80,13 @@ public class Main {
 
     // aggregate processes
     log.info("aggregate processes");
-    var calculationQueue = new CalculationQueue(inputDb, 16);
+    var calculationQueue = new CalculationQueue(inputDb, threads);
     var calcToSetupMap = new HashMap<String, CalculationSetup>();
     var unitToSystemMap = new HashMap<String, Process>();
     var modifiedUnitProcesses = new ArrayList<Process>();
     var processes = inputDb.allOf(Process.class);
     for (var process : processes) {
-      if (process.lastChange > referenceDate.getTime()) {
+      if (process.lastChange > referenceDate) {
         modifiedUnitProcesses.add(process);
         continue;
       }
@@ -200,11 +231,10 @@ public class Main {
     }
   }
 
-  private static File inputFileOf(String[] args) {
-    var input = args[0];
-    if (!input.toLowerCase().endsWith(".zolca"))
+  private static File inputFileOf(String arg) {
+    if (!arg.toLowerCase().endsWith(".zolca"))
         return null;
-    var file = new File(input);
+    var file = new File(arg);
     if (!file.exists()) {
       log.error("input file '{}' doesn't exist", file);
       return null;
@@ -213,11 +243,10 @@ public class Main {
     return file;
   }
 
-  private static File targetFileOf(String[] args) {
-    var target = args[1];
-    if (!target.toLowerCase().endsWith(".zolca"))
+  private static File targetFileOf(String arg) {
+    if (!arg.toLowerCase().endsWith(".zolca"))
       return null;
-    var file = new File(target);
+    var file = new File(arg);
     if (file.exists()) {
       log.error("target file '{}' already exists", file);
       return null;
@@ -226,15 +255,15 @@ public class Main {
     return file;
   }
 
-  private static Date referenceDateOf(String[] args) {
+  private static long referenceDateOf(String arg) {
     try {
       var formatter = new SimpleDateFormat("dd.MM.yyyy");
-      var date = formatter.parse(args[2]);
+      var date = formatter.parse(arg);
       log.info("selected reference date: {}", date.toString());
-      return date;
+      return date.getTime();
     } catch (ParseException e) {
       log.error("failed to parse reference date", e);
-      return null;
+      return 0;
     }
   }
 }
