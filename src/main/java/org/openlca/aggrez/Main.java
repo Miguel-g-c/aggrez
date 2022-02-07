@@ -6,10 +6,7 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-import org.openlca.core.database.CategoryDao;
-import org.openlca.core.database.Derby;
-import org.openlca.core.database.FlowPropertyDao;
-import org.openlca.core.database.UnitGroupDao;
+import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
 import org.openlca.core.math.CalculationQueue;
 import org.openlca.core.model.*;
@@ -166,15 +163,15 @@ public class Main {
     transmit(FlowProperty.class, inputDb, targetDb);
     updateUnitGroups(targetDb, requirePropertyUpdate);
 
+    log.info("transmit global parameters");
+    transmitGlobalParameters(inputDb, targetDb);
+
     log.info("transmit flows");
     transmit(Flow.class, inputDb, targetDb);
 
     log.info("transmit impact assessment methods");
     transmit(ImpactMethod.class, inputDb, targetDb);
     transmit(ImpactCategory.class, inputDb, targetDb);
-
-    log.info("transmit global parameters");
-    transmit(Parameter.class, inputDb, targetDb);
 
     log.info("transmit processes");
     for (var systemProcess : unitToSystemMap.values()) {
@@ -235,6 +232,7 @@ public class Main {
         targetUnitGroup.defaultFlowProperty = null;
         requireUpdate.put(sourceUnitGroup.defaultFlowProperty.refId, targetUnitGroup);
       }
+      log.trace("Transmitting UnitGroup {}", targetUnitGroup.refId);
       targetDao.insert(targetUnitGroup);
     }
   }
@@ -246,6 +244,17 @@ public class Main {
       var unitGroup = requireUpdate.get(refId);
       unitGroup.defaultFlowProperty = propertyDao.getForRefId(refId);
       unitGroupDao.update(unitGroup);
+    }
+  }
+
+  private static void transmitGlobalParameters(Derby source, Derby target) {
+    var sourceDao = new ParameterDao(source);
+    var targetDao = new ParameterDao(target);
+    for (var parameter : sourceDao.getGlobalParameters()) {
+      if (parameter.name == null)
+        continue;
+      log.trace("Transmitting Parameter {}", parameter.refId);
+      targetDao.insert(parameter);
     }
   }
 
