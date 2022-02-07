@@ -230,8 +230,7 @@ public class Main {
     var targetDao = new UnitGroupDao(target);
     var sourceUnitGroups = sourceDao.getAll();
     for (var sourceUnitGroup : sourceUnitGroups) {
-      var targetUnitGroup = sourceUnitGroup.copy();
-      targetUnitGroup.refId = sourceUnitGroup.refId;
+      var targetUnitGroup = clone(sourceUnitGroup);
       if (sourceUnitGroup.defaultFlowProperty != null) {
         targetUnitGroup.defaultFlowProperty = null;
         requireUpdate.put(sourceUnitGroup.defaultFlowProperty.refId, targetUnitGroup);
@@ -248,6 +247,30 @@ public class Main {
       unitGroup.defaultFlowProperty = propertyDao.getForRefId(refId);
       unitGroupDao.update(unitGroup);
     }
+  }
+
+  private static UnitGroup clone(UnitGroup from) {
+    var clone = new UnitGroup();
+    clone.id = from.id;
+    clone.refId = from.refId;
+    clone.name = from.name;
+    clone.description = from.description;
+    clone.version = from.version;
+    clone.lastChange = from.lastChange;
+    clone.category = from.category;
+    clone.tags = from.tags;
+    clone.library = from.library;
+    clone.defaultFlowProperty = from.defaultFlowProperty;
+    for (var unit : from.units) {
+      var clonedUnit = unit.copy();
+      clonedUnit.id = unit.id;
+      clonedUnit.refId = unit.refId;
+      clone.units.add(clonedUnit);
+      if (Objects.equals(from.referenceUnit, unit)) {
+        clone.referenceUnit = clonedUnit;
+      }
+    }
+    return clone;
   }
 
   private static File extractDatabase(File backupFile) {
