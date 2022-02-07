@@ -6,7 +6,7 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-import org.openlca.core.database.Derby;
+import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
 import org.openlca.core.math.CalculationQueue;
 import org.openlca.core.model.*;
@@ -157,8 +157,14 @@ public class Main {
 
     // import data
     log.info("transmit reference data");
-    transmit(UnitGroup.class, inputDb, targetDb);
+    transmitCategories(inputDb, targetDb);
+    var requirePropertyUpdate = new HashMap<String, UnitGroup>();
+    transmitUnitGroups(inputDb, targetDb, requirePropertyUpdate);
     transmit(FlowProperty.class, inputDb, targetDb);
+    updateUnitGroups(targetDb, requirePropertyUpdate);
+
+    log.info("transmit global parameters");
+    transmitGlobalParameters(inputDb, targetDb);
 
     log.info("transmit flows");
     transmit(Flow.class, inputDb, targetDb);
@@ -166,9 +172,6 @@ public class Main {
     log.info("transmit impact assessment methods");
     transmit(ImpactMethod.class, inputDb, targetDb);
     transmit(ImpactCategory.class, inputDb, targetDb);
-
-    log.info("transmit global parameters");
-    transmit(Parameter.class, inputDb, targetDb);
 
     log.info("transmit processes");
     for (var systemProcess : unitToSystemMap.values()) {
@@ -199,14 +202,84 @@ public class Main {
     }
   }
 
-  private static <T extends RootEntity> void transmit(Class<T> entities, Derby from, Derby to) {
-    var inputEntities = from.allOf(entities);
+  private static <T extends RootEntity> void transmit(Class<T> entities, Derby source, Derby target) {
+    var inputEntities = source.allOf(entities);
     if (inputEntities.isEmpty())
       return;
     for (var entity : inputEntities) {
       log.trace("Transmitting " + entities.getName() + " {}", entity.refId);
-      to.insert(entity);
+      target.insert(entity);
     }
+  }
+
+  private static void transmitCategories(Derby source, Derby target) {
+    var sourceDao = new CategoryDao(source);
+    var targetDao = new CategoryDao(target);
+    var sourceRoots = sourceDao.getRootCategories();
+    for (var sourceRoot : sourceRoots) {
+      log.trace("Transmitting Categories {}", sourceRoot.refId);
+      targetDao.insert(sourceRoot);
+    }
+  }
+
+  private static void transmitUnitGroups(Derby source, Derby target, HashMap<String, UnitGroup> requireUpdate) {
+    var sourceDao = new UnitGroupDao(source);
+    var targetDao = new UnitGroupDao(target);
+    var sourceUnitGroups = sourceDao.getAll();
+    for (var sourceUnitGroup : sourceUnitGroups) {
+      var targetUnitGroup = clone(sourceUnitGroup);
+      if (sourceUnitGroup.defaultFlowProperty != null) {
+        targetUnitGroup.defaultFlowProperty = null;
+        requireUpdate.put(sourceUnitGroup.defaultFlowProperty.refId, targetUnitGroup);
+      }
+      log.trace("Transmitting UnitGroup {}", targetUnitGroup.refId);
+      targetDao.insert(targetUnitGroup);
+    }
+  }
+
+  private static void updateUnitGroups(Derby target, HashMap<String, UnitGroup> requireUpdate) {
+    var propertyDao = new FlowPropertyDao(target);
+    var unitGroupDao = new UnitGroupDao(target);
+    for (String refId : requireUpdate.keySet()) {
+      var unitGroup = requireUpdate.get(refId);
+      unitGroup.defaultFlowProperty = propertyDao.getForRefId(refId);
+      unitGroupDao.update(unitGroup);
+    }
+  }
+
+  private static void transmitGlobalParameters(Derby source, Derby target) {
+    var sourceDao = new ParameterDao(source);
+    var targetDao = new ParameterDao(target);
+    for (var parameter : sourceDao.getGlobalParameters()) {
+      if (parameter.name == null)
+        continue;
+      log.trace("Transmitting Parameter {}", parameter.refId);
+      targetDao.insert(parameter);
+    }
+  }
+
+  private static UnitGroup clone(UnitGroup from) {
+    var clone = new UnitGroup();
+    clone.id = from.id;
+    clone.refId = from.refId;
+    clone.name = from.name;
+    clone.description = from.description;
+    clone.version = from.version;
+    clone.lastChange = from.lastChange;
+    clone.category = from.category;
+    clone.tags = from.tags;
+    clone.library = from.library;
+    clone.defaultFlowProperty = from.defaultFlowProperty;
+    for (var unit : from.units) {
+      var clonedUnit = unit.copy();
+      clonedUnit.id = unit.id;
+      clonedUnit.refId = unit.refId;
+      clone.units.add(clonedUnit);
+      if (Objects.equals(from.referenceUnit, unit)) {
+        clone.referenceUnit = clonedUnit;
+      }
+    }
+    return clone;
   }
 
   private static File extractDatabase(File backupFile) {
@@ -220,6 +293,7 @@ public class Main {
       return null;
     }
   }
+
   private static File createDatabase() {
     try {
       var dbDir = Files.createTempDirectory("_aggrez_").toFile();
@@ -233,7 +307,7 @@ public class Main {
 
   private static File inputFileOf(String arg) {
     if (!arg.toLowerCase().endsWith(".zolca"))
-        return null;
+      return null;
     var file = new File(arg);
     if (!file.exists()) {
       log.error("input file '{}' doesn't exist", file);
