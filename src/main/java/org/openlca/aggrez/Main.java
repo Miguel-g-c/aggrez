@@ -84,8 +84,9 @@ public class Main {
     var calcToSetupMap = new HashMap<String, CalculationSetup>();
     var unitToSystemMap = new HashMap<String, Process>();
     var modifiedUnitProcesses = new ArrayList<Process>();
-    var processes = inputDb.allOf(Process.class);
-    for (var process : processes) {
+    var processDao = new ProcessDao(inputDb);
+    var usedProcesses = processDao.getForIds(processDao.getUsed());
+    for (var process : usedProcesses) {
       if (process.lastChange > referenceDate) {
         modifiedUnitProcesses.add(process);
         continue;
@@ -170,8 +171,8 @@ public class Main {
     transmit(Flow.class, inputDb, targetDb);
 
     log.info("transmit impact assessment methods");
-    transmit(ImpactMethod.class, inputDb, targetDb);
     transmit(ImpactCategory.class, inputDb, targetDb);
+    transmit(ImpactMethod.class, inputDb, targetDb);
 
     log.info("transmit processes");
     for (var systemProcess : unitToSystemMap.values()) {
