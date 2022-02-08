@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
@@ -84,8 +85,13 @@ public class Main {
     var calcToSetupMap = new HashMap<String, CalculationSetup>();
     var unitToSystemMap = new HashMap<String, Process>();
     var unmodifiedProcesses = new ArrayList<Process>();
-    var processDao = new ProcessDao(inputDb);
-    var usedProcesses = processDao.getForIds(processDao.getUsed());
+    var productSystemDao = new ProductSystemDao(inputDb);
+    var productSystems = productSystemDao.getAll();
+    var foregroundProcesses = productSystems
+            .stream()
+            .map(ps -> ps.referenceProcess)
+            .collect(Collectors.toSet());
+    var usedProcesses = getUsedProcesses(foregroundProcesses, foregroundProcesses, inputDb);
     for (var process : usedProcesses) {
       if (process.processType == ProcessType.LCI_RESULT) {
         unmodifiedProcesses.add(process);
@@ -121,7 +127,6 @@ public class Main {
     //update product systems
     log.info("update product systems");
     var newProductSystems = new ArrayList<ProductSystem>();
-    var productSystems = inputDb.allOf(ProductSystem.class);
     for (var productSystem : productSystems) {
       var referenceProcess = productSystem.referenceProcess;
       if (unitToSystemMap.containsKey(referenceProcess.refId))
@@ -261,6 +266,23 @@ public class Main {
       log.trace("Transmitting Parameter {}", parameter.refId);
       targetDao.insert(parameter);
     }
+  }
+
+  private static Set<Process> getUsedProcesses(Set<Process> foregroundProcesses, Set<Process> usedProcesses, Derby db) {
+    var inputProcesses = foregroundProcesses
+            .stream()
+            .flatMap(p -> p.exchanges.stream())
+            .filter(e -> e.defaultProviderId != 0)
+            .filter(e -> e.isInput)
+            .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
+            .map(e -> db.get(Process.class, e.defaultProviderId))
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+    inputProcesses.removeIf(usedProcesses::contains);
+    if (inputProcesses.isEmpty())
+      return usedProcesses;
+    usedProcesses.addAll(inputProcesses);
+    return getUsedProcesses(inputProcesses, usedProcesses, db);
   }
 
   private static UnitGroup clone(UnitGroup from) {
