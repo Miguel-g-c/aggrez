@@ -83,12 +83,16 @@ public class Main {
     var calculationQueue = new CalculationQueue(inputDb, threads);
     var calcToSetupMap = new HashMap<String, CalculationSetup>();
     var unitToSystemMap = new HashMap<String, Process>();
-    var modifiedUnitProcesses = new ArrayList<Process>();
+    var unmodifiedProcesses = new ArrayList<Process>();
     var processDao = new ProcessDao(inputDb);
     var usedProcesses = processDao.getForIds(processDao.getUsed());
     for (var process : usedProcesses) {
+      if (process.processType == ProcessType.LCI_RESULT) {
+        unmodifiedProcesses.add(process);
+        continue;
+      }
       if (process.lastChange > referenceDate) {
-        modifiedUnitProcesses.add(process);
+        unmodifiedProcesses.add(process);
         continue;
       }
       var setup = CalculationSetup.simple(process);
@@ -179,7 +183,7 @@ public class Main {
       log.trace("Transmitting Process {}", systemProcess.refId);
       targetDb.insert(systemProcess);
     }
-    for (var process : modifiedUnitProcesses) {
+    for (var process : unmodifiedProcesses) {
       log.trace("Transmitting Process {}", process.refId);
       targetDb.insert(process);
     }
