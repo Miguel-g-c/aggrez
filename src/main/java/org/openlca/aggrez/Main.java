@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import org.openlca.core.database.*;
@@ -79,92 +80,6 @@ public class Main {
     Upgrades.on(inputDb);
     Upgrades.on(targetDb);
 
-    // aggregate processes
-    log.info("aggregate processes");
-    var calculationQueue = new CalculationQueue(inputDb, threads);
-    var calcToSetupMap = new HashMap<String, CalculationSetup>();
-    var unitToSystemMap = new HashMap<String, Process>();
-    var unmodifiedProcesses = new ArrayList<Process>();
-    var productSystemDao = new ProductSystemDao(inputDb);
-    var productSystems = productSystemDao.getAll();
-    var foregroundProcesses = productSystems
-            .stream()
-            .map(ps -> ps.referenceProcess)
-            .collect(Collectors.toSet());
-    var usedProcesses = getUsedProcesses(foregroundProcesses, foregroundProcesses, inputDb);
-    for (var process : usedProcesses) {
-      if (process.processType == ProcessType.LCI_RESULT) {
-        unmodifiedProcesses.add(process);
-        continue;
-      }
-      if (process.lastChange > referenceDate) {
-        unmodifiedProcesses.add(process);
-        continue;
-      }
-      var setup = CalculationSetup.simple(process);
-      var calcState = calculationQueue.schedule(setup);
-      calcToSetupMap.put(calcState.id(), setup);
-    }
-    for (var calcId : calcToSetupMap.keySet()) {
-      var isReady = false;
-      CalculationQueue.State state = null;
-      while (!isReady) {
-        state = calculationQueue.get(calcId);
-        isReady = state.isReady();
-      }
-      var results = (SimpleResult) state.result();
-      var process = calcToSetupMap.get(calcId).process();
-      log.trace("aggregate process: {}", process.refId);
-      var systemProcess = SystemProcess.create(
-              inputDb,
-              calcToSetupMap.get(calcId),
-              results,
-              process.name
-      );
-      unitToSystemMap.put(process.refId, systemProcess);
-    }
-
-    //update product systems
-    log.info("update product systems");
-    var newProductSystems = new ArrayList<ProductSystem>();
-    for (var productSystem : productSystems) {
-      var referenceProcess = productSystem.referenceProcess;
-      if (unitToSystemMap.containsKey(referenceProcess.refId))
-        productSystem.referenceProcess = unitToSystemMap.get(referenceProcess.refId);
-      var newProcessIds = new HashSet<Long>();
-      for (var processId : productSystem.processes) {
-        var process = inputDb.get(Process.class, processId);
-        if (unitToSystemMap.containsKey(process.refId)) {
-          var newProcess = unitToSystemMap.get(process.refId);
-          newProcessIds.add(newProcess.id);
-        } else {
-          newProcessIds.add(processId);
-        }
-      }
-      productSystem.processes.clear();
-      productSystem.processes.addAll(newProcessIds);
-      var newProcessLinks = new ArrayList<ProcessLink>();
-      for (var processLink : productSystem.processLinks) {
-        if (processLink.hasProcessProvider()) {
-          var providerId = processLink.providerId;
-          var process = inputDb.get(Process.class, providerId);
-          if (unitToSystemMap.containsKey(process.refId)) {
-            var newProcess = unitToSystemMap.get(process.refId);
-            processLink.providerId = newProcess.id;
-          }
-        }
-        var linkedProcess = inputDb.get(Process.class, processLink.processId);
-        if (unitToSystemMap.containsKey(linkedProcess.refId)) {
-          var newProcess = unitToSystemMap.get(linkedProcess.refId);
-          processLink.processId = newProcess.id;
-        }
-        newProcessLinks.add(processLink);
-      }
-      productSystem.processLinks.clear();
-      productSystem.processLinks.addAll(newProcessLinks);
-      newProductSystems.add(productSystem);
-    }
-
     // import data
     log.info("transmit reference data");
     transmitCategories(inputDb, targetDb);
@@ -183,22 +98,113 @@ public class Main {
     transmit(ImpactCategory.class, inputDb, targetDb);
     transmit(ImpactMethod.class, inputDb, targetDb);
 
-    log.info("transmit processes");
-    for (var systemProcess : unitToSystemMap.values()) {
-      log.trace("Transmitting Process {}", systemProcess.refId);
-      targetDb.insert(systemProcess);
+    // filter out unused processes
+    log.info("filer out unused processes");
+    var calculationQueue = new CalculationQueue(inputDb, threads);
+    var calcToSetupMap = new HashMap<String, CalculationSetup>();
+    var unitToSystemMap = new HashMap<String, String>();
+    var unmodifiedProcesses = new ArrayList<Process>();
+    var productSystemDao = new ProductSystemDao(inputDb);
+    var productSystems = productSystemDao.getAll();
+    var foregroundProcesses = productSystems
+            .stream()
+            .map(ps -> ps.referenceProcess)
+            .collect(Collectors.toSet());
+    var usedProcesses = getUsedProcesses(foregroundProcesses, foregroundProcesses, inputDb);
+
+    // aggregate processes
+    for (var process : usedProcesses) {
+      if (process.processType == ProcessType.LCI_RESULT) {
+        unmodifiedProcesses.add(process);
+        continue;
+      }
+      if (process.lastChange > referenceDate) {
+        unmodifiedProcesses.add(process);
+        continue;
+      }
+      var setup = CalculationSetup.simple(process);
+      var calcState = calculationQueue.schedule(setup);
+      calcToSetupMap.put(calcState.id(), setup);
     }
+
+    log.info("transmit unmodified processes");
     for (var process : unmodifiedProcesses) {
       log.trace("Transmitting Process {}", process.refId);
       targetDb.insert(process);
     }
 
-    log.info("transmit product systems");
-    for (var productSystem : newProductSystems) {
+    log.info("aggregate processes");
+    for (var calcId : calcToSetupMap.keySet()) {
+      var isReady = false;
+      CalculationQueue.State state = null;
+      while (!isReady) {
+        state = calculationQueue.get(calcId);
+        isReady = state.isReady();
+      }
+      var results = (SimpleResult) state.result();
+      var process = calcToSetupMap.get(calcId).process();
+      log.trace("aggregate process: {}", process.refId);
+      var systemProcess = SystemProcess.create(
+              inputDb,
+              calcToSetupMap.get(calcId),
+              results,
+              process.name
+      );
+      unitToSystemMap.put(process.refId, systemProcess.refId);
+      log.trace("Transmitting Process {}", systemProcess.refId);
+      targetDb.insert(systemProcess);
+      calculationQueue.dispose(calcId);
+      calcToSetupMap.remove(calcId);
+    }
+    var executor = calculationQueue.shutdown();
+    try {
+      executor.awaitTermination(1, TimeUnit.MINUTES);
+    } catch (InterruptedException e) {
+      log.error("Unable to stop the calculation service", e);
+    }
+
+    //update product systems
+    log.info("update product systems");
+    for (var productSystem : productSystems) {
+      var referenceProcess = productSystem.referenceProcess;
+      if (unitToSystemMap.containsKey(referenceProcess.refId))
+        productSystem.referenceProcess = targetDb.get(Process.class, unitToSystemMap.get(referenceProcess.refId));
+      var newProcessIds = new HashSet<Long>();
+      for (var processId : productSystem.processes) {
+        var process = inputDb.get(Process.class, processId);
+        if (unitToSystemMap.containsKey(process.refId)) {
+          var newProcess = targetDb.get(Process.class, unitToSystemMap.get(process.refId));
+          newProcessIds.add(newProcess.id);
+        } else {
+          newProcessIds.add(processId);
+        }
+      }
+      productSystem.processes.clear();
+      productSystem.processes.addAll(newProcessIds);
+      var newProcessLinks = new ArrayList<ProcessLink>();
+      for (var processLink : productSystem.processLinks) {
+        if (processLink.hasProcessProvider()) {
+          var providerId = processLink.providerId;
+          var process = inputDb.get(Process.class, providerId);
+          if (unitToSystemMap.containsKey(process.refId)) {
+            var newProcess = targetDb.get(Process.class, unitToSystemMap.get(process.refId));
+            processLink.providerId = newProcess.id;
+          }
+        }
+        var linkedProcess = inputDb.get(Process.class, processLink.processId);
+        if (unitToSystemMap.containsKey(linkedProcess.refId)) {
+          var newProcess = targetDb.get(Process.class, unitToSystemMap.get(linkedProcess.refId));
+          processLink.processId = newProcess.id;
+        }
+        newProcessLinks.add(processLink);
+      }
+      productSystem.processLinks.clear();
+      productSystem.processLinks.addAll(newProcessLinks);
       log.trace("Transmitting ProductSystem {}", productSystem.refId);
       targetDb.insert(productSystem);
     }
 
+    // Backup database
     try {
       log.info("export database to: {}", target);
       Derby.zip(targetDbDir, target);
@@ -273,8 +279,8 @@ public class Main {
             .stream()
             .flatMap(p -> p.exchanges.stream())
             .filter(e -> e.defaultProviderId != 0)
-            .filter(e -> e.isInput)
             .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
+            .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
             .map(e -> db.get(Process.class, e.defaultProviderId))
             .filter(Objects::nonNull)
             .collect(Collectors.toSet());
