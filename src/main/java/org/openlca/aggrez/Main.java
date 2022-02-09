@@ -7,11 +7,13 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
 import org.openlca.core.math.CalculationQueue;
 import org.openlca.core.model.*;
+import org.openlca.core.model.Currency;
 import org.openlca.core.model.Process;
 import org.openlca.core.results.SimpleResult;
 import org.openlca.core.results.SystemProcess;
@@ -22,14 +24,16 @@ import org.slf4j.LoggerFactory;
 public class Main {
 
   private static final Logger log = LoggerFactory.getLogger(Main.class);
+  private static Derby inputDb;
+  private static Derby targetDb;
+  private static long referenceDate = 0;
+  private static int threads = 2;
 
   public static void main(String[] args) {
 
     // init default args
     File input = null;
     File target = null;
-    long referenceDate = 0;
-    int threads = 2;
 
     // parse the provided args
     String flag = null;
@@ -43,13 +47,9 @@ public class Main {
       switch (flag) {
         case "-src":
           input = inputFileOf(arg);
-          if (input == null)
-            return;
           break;
         case "-dest":
           target = targetFileOf(arg);
-          if (target == null)
-            return;
           break;
         case "-from":
           referenceDate = referenceDateOf(arg);
@@ -66,6 +66,10 @@ public class Main {
     }
 
     // collect input database and create the target database
+    if (input == null)
+      return;
+    if (target == null)
+      return;
     var inputDbDir = extractDatabase(input);
     if (inputDbDir == null)
       return;
@@ -74,29 +78,31 @@ public class Main {
       return;
 
     // init databases
-    var inputDb = new Derby(inputDbDir);
-    var targetDb = new Derby(targetDbDir);
+    inputDb = new Derby(inputDbDir);
+    targetDb = new Derby(targetDbDir);
     log.info("check input database");
     Upgrades.on(inputDb);
     Upgrades.on(targetDb);
 
     // import data
     log.info("transmit reference data");
-    transmitCategories(inputDb, targetDb);
+    transmitCategories();
     var requirePropertyUpdate = new HashMap<String, UnitGroup>();
-    transmitUnitGroups(inputDb, targetDb, requirePropertyUpdate);
-    transmit(FlowProperty.class, inputDb, targetDb);
-    updateUnitGroups(targetDb, requirePropertyUpdate);
+    transmitUnitGroups(requirePropertyUpdate);
+    transmit(FlowProperty.class);
+    updateUnitGroups(requirePropertyUpdate);
+    transmit(Location.class);
+    transmit(Currency.class);
 
     log.info("transmit global parameters");
-    transmitGlobalParameters(inputDb, targetDb);
+    transmitGlobalParameters();
 
     log.info("transmit flows");
-    transmit(Flow.class, inputDb, targetDb);
+    transmit(Flow.class);
 
     log.info("transmit impact assessment methods");
-    transmit(ImpactCategory.class, inputDb, targetDb);
-    transmit(ImpactMethod.class, inputDb, targetDb);
+    transmit(ImpactCategory.class);
+    transmit(ImpactMethod.class);
 
     // filter out unused processes
     log.info("filer out unused processes");
@@ -110,7 +116,12 @@ public class Main {
             .stream()
             .map(ps -> ps.referenceProcess)
             .collect(Collectors.toSet());
-    var usedProcesses = getUsedProcesses(foregroundProcesses, foregroundProcesses, inputDb);
+    foregroundProcesses = getForegroundProcesses(foregroundProcesses, foregroundProcesses);
+    var backgroundProcesses = getFirstBackgroundProcessesOf(foregroundProcesses);
+    var usedProcesses = Stream.concat(
+            foregroundProcesses.stream(),
+            backgroundProcesses.stream()
+    ).collect(Collectors.toSet());
 
     // aggregate processes
     for (var process : usedProcesses) {
@@ -130,6 +141,10 @@ public class Main {
     log.info("transmit unmodified processes");
     for (var process : unmodifiedProcesses) {
       log.trace("Transmitting Process {}", process.refId);
+      process.dqEntry = null;
+      process.dqSystem = null;
+      process.exchangeDqSystem = null;
+      process.socialDqSystem = null;
       targetDb.insert(process);
     }
 
@@ -218,19 +233,19 @@ public class Main {
     }
   }
 
-  private static <T extends RootEntity> void transmit(Class<T> entities, Derby source, Derby target) {
-    var inputEntities = source.allOf(entities);
+  private static <T extends RootEntity> void transmit(Class<T> entities) {
+    var inputEntities = inputDb.allOf(entities);
     if (inputEntities.isEmpty())
       return;
     for (var entity : inputEntities) {
       log.trace("Transmitting " + entities.getName() + " {}", entity.refId);
-      target.insert(entity);
+      targetDb.insert(entity);
     }
   }
 
-  private static void transmitCategories(Derby source, Derby target) {
-    var sourceDao = new CategoryDao(source);
-    var targetDao = new CategoryDao(target);
+  private static void transmitCategories() {
+    var sourceDao = new CategoryDao(inputDb);
+    var targetDao = new CategoryDao(targetDb);
     var sourceRoots = sourceDao.getRootCategories();
     for (var sourceRoot : sourceRoots) {
       log.trace("Transmitting Categories {}", sourceRoot.refId);
@@ -238,9 +253,9 @@ public class Main {
     }
   }
 
-  private static void transmitUnitGroups(Derby source, Derby target, HashMap<String, UnitGroup> requireUpdate) {
-    var sourceDao = new UnitGroupDao(source);
-    var targetDao = new UnitGroupDao(target);
+  private static void transmitUnitGroups(HashMap<String, UnitGroup> requireUpdate) {
+    var sourceDao = new UnitGroupDao(inputDb);
+    var targetDao = new UnitGroupDao(targetDb);
     var sourceUnitGroups = sourceDao.getAll();
     for (var sourceUnitGroup : sourceUnitGroups) {
       var targetUnitGroup = clone(sourceUnitGroup);
@@ -253,9 +268,9 @@ public class Main {
     }
   }
 
-  private static void updateUnitGroups(Derby target, HashMap<String, UnitGroup> requireUpdate) {
-    var propertyDao = new FlowPropertyDao(target);
-    var unitGroupDao = new UnitGroupDao(target);
+  private static void updateUnitGroups(HashMap<String, UnitGroup> requireUpdate) {
+    var propertyDao = new FlowPropertyDao(targetDb);
+    var unitGroupDao = new UnitGroupDao(targetDb);
     for (String refId : requireUpdate.keySet()) {
       var unitGroup = requireUpdate.get(refId);
       unitGroup.defaultFlowProperty = propertyDao.getForRefId(refId);
@@ -263,9 +278,9 @@ public class Main {
     }
   }
 
-  private static void transmitGlobalParameters(Derby source, Derby target) {
-    var sourceDao = new ParameterDao(source);
-    var targetDao = new ParameterDao(target);
+  private static void transmitGlobalParameters() {
+    var sourceDao = new ParameterDao(inputDb);
+    var targetDao = new ParameterDao(targetDb);
     for (var parameter : sourceDao.getGlobalParameters()) {
       if (parameter.name == null)
         continue;
@@ -274,21 +289,35 @@ public class Main {
     }
   }
 
-  private static Set<Process> getUsedProcesses(Set<Process> foregroundProcesses, Set<Process> usedProcesses, Derby db) {
-    var inputProcesses = foregroundProcesses
+  private static Set<Process> getForegroundProcesses(Set<Process> processes, Set<Process> foregroundProcesses) {
+    var inputProcesses = processes
             .stream()
             .flatMap(p -> p.exchanges.stream())
             .filter(e -> e.defaultProviderId != 0)
             .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
             .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
-            .map(e -> db.get(Process.class, e.defaultProviderId))
+            .map(e -> inputDb.get(Process.class, e.defaultProviderId))
             .filter(Objects::nonNull)
+            .filter(p -> p.lastChange > referenceDate)
             .collect(Collectors.toSet());
-    inputProcesses.removeIf(usedProcesses::contains);
+    inputProcesses.removeIf(foregroundProcesses::contains);
     if (inputProcesses.isEmpty())
-      return usedProcesses;
-    usedProcesses.addAll(inputProcesses);
-    return getUsedProcesses(inputProcesses, usedProcesses, db);
+      return foregroundProcesses;
+    foregroundProcesses.addAll(inputProcesses);
+    return getForegroundProcesses(inputProcesses, foregroundProcesses);
+  }
+
+  private static Set<Process> getFirstBackgroundProcessesOf(Set<Process> processes) {
+    return processes
+            .stream()
+            .flatMap(p -> p.exchanges.stream())
+            .filter(e -> e.defaultProviderId != 0)
+            .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
+            .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
+            .map(e -> inputDb.get(Process.class, e.defaultProviderId))
+            .filter(Objects::nonNull)
+            .filter(p -> p.lastChange < referenceDate)
+            .collect(Collectors.toSet());
   }
 
   private static UnitGroup clone(UnitGroup from) {
