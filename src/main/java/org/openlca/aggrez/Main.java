@@ -207,8 +207,10 @@ public class Main {
       log.info("export database to: {}", target);
       Derby.zip(targetDbDir, target);
       log.info("drop temporary database: {}", inputDbDir);
+      inputDb.close();
       Dirs.delete(inputDbDir);
       log.info("drop temporary database: {}", targetDbDir);
+      targetDb.close();
       Dirs.delete(targetDbDir);
       log.info("all done");
     } catch (Exception e) {
