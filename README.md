@@ -8,8 +8,8 @@ to aggregate. Required.
 - `-dest`: An openLCA database backup file name for the resulting database. 
 Required.
 - `-from`: A date using the `dd.MM.yyyy` format. Every process in the source
-database newer than this date will not be aggregated. Optional (if not 
-provided, every process will be aggregated).
+database newer than this date will not be aggregated. It represents the 
+entrypoint to the background system. Required
 - `-threads`: Number of threads to be used in the aggregation. Optional (if 
 not provided, the tool will use 2 threads).
 

@@ -70,6 +70,8 @@ public class Main {
       return;
     if (target == null)
       return;
+    if (referenceDate == 0)
+      return;
     var inputDbDir = extractDatabase(input);
     if (inputDbDir == null)
       return;
