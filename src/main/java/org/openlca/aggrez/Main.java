@@ -86,46 +86,41 @@ public class Main {
     Upgrades.on(inputDb);
     Upgrades.on(targetDb);
 
-    // import data
-    log.info("transmit reference data");
-    transmitCategories();
-    var requirePropertyUpdate = new HashMap<String, UnitGroup>();
-    transmitUnitGroups(requirePropertyUpdate);
-    transmit(FlowProperty.class);
-    updateUnitGroups(requirePropertyUpdate);
-    transmit(Location.class);
-    transmit(Currency.class);
-
-    log.info("transmit global parameters");
-    transmitGlobalParameters();
-
-    log.info("transmit flows");
-    transmit(Flow.class);
-
-    log.info("transmit impact assessment methods");
-    transmit(ImpactCategory.class);
-    transmit(ImpactMethod.class);
-
     // filter out unused processes
     log.info("filer out unused processes");
     var calculationQueue = new CalculationQueue(inputDb, threads);
     var calcToSetupMap = new HashMap<String, CalculationSetup>();
-    var unitToSystemMap = new HashMap<String, String>();
+    var unitToSystemMap = new HashMap<String, Process>();
     var unmodifiedProcesses = new ArrayList<Process>();
     var productSystemDao = new ProductSystemDao(inputDb);
     var productSystems = productSystemDao.getAll();
-    var foregroundProcesses = productSystems
+    var usedProcesses = productSystems
             .stream()
             .map(ps -> ps.referenceProcess)
             .collect(Collectors.toSet());
-    foregroundProcesses = getForegroundProcesses(foregroundProcesses, foregroundProcesses);
-    var backgroundProcesses = getFirstBackgroundProcessesOf(foregroundProcesses);
-    var usedProcesses = Stream.concat(
-            foregroundProcesses.stream(),
-            backgroundProcesses.stream()
-    ).collect(Collectors.toSet());
+    usedProcesses = getForegroundProcesses(usedProcesses, usedProcesses);
+    var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
+    usedProcesses.addAll(backgroundProcesses);
+
+    // filter out unused product flows
+    log.info("filer out unused product flows");
+    var usedProductFlows = usedProcesses
+            .stream()
+            .flatMap(p -> p.exchanges.stream())
+            .map(e -> e.flow)
+            .filter(f -> f.flowType != FlowType.ELEMENTARY_FLOW)
+            .collect(Collectors.toSet());
+
+    // filter out unused categories
+    log.info("filer out unused categories");
+    var usedProcessCategories = usedProcesses
+            .stream()
+            .map(p -> p.category)
+            .collect(Collectors.toSet());
+    usedProcessCategories = getParentCategories(usedProcessCategories, usedProcessCategories);
 
     // aggregate processes
+    log.info("aggregate processes");
     for (var process : usedProcesses) {
       if (process.processType == ProcessType.LCI_RESULT) {
         unmodifiedProcesses.add(process);
@@ -139,18 +134,6 @@ public class Main {
       var calcState = calculationQueue.schedule(setup);
       calcToSetupMap.put(calcState.id(), setup);
     }
-
-    log.info("transmit unmodified processes");
-    for (var process : unmodifiedProcesses) {
-      log.trace("Transmitting Process {}", process.refId);
-      process.dqEntry = null;
-      process.dqSystem = null;
-      process.exchangeDqSystem = null;
-      process.socialDqSystem = null;
-      targetDb.insert(process);
-    }
-
-    log.info("aggregate processes");
     for (var calcId : calcToSetupMap.keySet()) {
       var isReady = false;
       CalculationQueue.State state = null;
@@ -167,30 +150,61 @@ public class Main {
               results,
               process.name
       );
-      unitToSystemMap.put(process.refId, systemProcess.refId);
-      log.trace("Transmitting Process {}", systemProcess.refId);
-      targetDb.insert(systemProcess);
+      unitToSystemMap.put(process.refId, systemProcess);
       calculationQueue.dispose(calcId);
-      calcToSetupMap.remove(calcId);
     }
     var executor = calculationQueue.shutdown();
-    try {
-      executor.awaitTermination(1, TimeUnit.MINUTES);
-    } catch (InterruptedException e) {
-      log.error("Unable to stop the calculation service", e);
+    executor.shutdownNow();
+
+    // import data
+    log.info("transmit reference data");
+    transmitCategories(usedProcessCategories);
+    var requirePropertyUpdate = new HashMap<String, UnitGroup>();
+    transmitUnitGroups(requirePropertyUpdate);
+    transmit(FlowProperty.class);
+    updateUnitGroups(requirePropertyUpdate);
+    transmit(Location.class);
+    transmit(Currency.class);
+
+    log.info("transmit global parameters");
+    transmitGlobalParameters();
+
+    log.info("transmit flows");
+    transmitFlows(usedProductFlows);
+
+    log.info("transmit impact assessment methods");
+    transmit(ImpactCategory.class);
+    transmit(ImpactMethod.class);
+
+    log.info("transmit processes");
+    for (var process : unmodifiedProcesses) {
+      log.trace("Transmitting Process {}", process.refId);
+      process.dqEntry = null;
+      process.dqSystem = null;
+      process.exchangeDqSystem = null;
+      process.socialDqSystem = null;
+      process.documentation = null;
+      updateProcess(process, unitToSystemMap);
+      targetDb.insert(process);
     }
 
-    //update product systems
-    log.info("update product systems");
+    for (var process : unitToSystemMap.values()) {
+      log.trace("Transmitting Process {}", process.refId);
+      updateProcess(process, unitToSystemMap);
+      targetDb.insert(process);
+    }
+
+    // update and transmit product systems
+    log.info("transmit product systems");
     for (var productSystem : productSystems) {
       var referenceProcess = productSystem.referenceProcess;
       if (unitToSystemMap.containsKey(referenceProcess.refId))
-        productSystem.referenceProcess = targetDb.get(Process.class, unitToSystemMap.get(referenceProcess.refId));
+        productSystem.referenceProcess = unitToSystemMap.get(referenceProcess.refId);
       var newProcessIds = new HashSet<Long>();
       for (var processId : productSystem.processes) {
         var process = inputDb.get(Process.class, processId);
         if (unitToSystemMap.containsKey(process.refId)) {
-          var newProcess = targetDb.get(Process.class, unitToSystemMap.get(process.refId));
+          var newProcess = unitToSystemMap.get(process.refId);
           newProcessIds.add(newProcess.id);
         } else {
           newProcessIds.add(processId);
@@ -204,13 +218,13 @@ public class Main {
           var providerId = processLink.providerId;
           var process = inputDb.get(Process.class, providerId);
           if (unitToSystemMap.containsKey(process.refId)) {
-            var newProcess = targetDb.get(Process.class, unitToSystemMap.get(process.refId));
+            var newProcess = unitToSystemMap.get(process.refId);
             processLink.providerId = newProcess.id;
           }
         }
         var linkedProcess = inputDb.get(Process.class, processLink.processId);
         if (unitToSystemMap.containsKey(linkedProcess.refId)) {
-          var newProcess = targetDb.get(Process.class, unitToSystemMap.get(linkedProcess.refId));
+          var newProcess = unitToSystemMap.get(linkedProcess.refId);
           processLink.processId = newProcess.id;
         }
         newProcessLinks.add(processLink);
@@ -245,13 +259,29 @@ public class Main {
     }
   }
 
-  private static void transmitCategories() {
+  private static void transmitCategories(Set<Category> processCategories) {
     var sourceDao = new CategoryDao(inputDb);
     var targetDao = new CategoryDao(targetDb);
-    var sourceRoots = sourceDao.getRootCategories();
-    for (var sourceRoot : sourceRoots) {
-      log.trace("Transmitting Categories {}", sourceRoot.refId);
-      targetDao.insert(sourceRoot);
+    for (var modelType : ModelType.categorized()) {
+      switch (modelType) {
+        case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD, FLOW, PRODUCT_SYSTEM -> {
+          var sourceRoots = sourceDao.getRootCategories(modelType);
+          for (var sourceRoot : sourceRoots) {
+            log.trace("Transmitting Categories {}", sourceRoot.refId);
+            targetDao.insert(sourceRoot);
+          }
+        }
+        case PROCESS -> {
+          var sourceRoots = sourceDao.getRootCategories(modelType);
+          for (var sourceRoot : sourceRoots) {
+            if (!processCategories.contains(sourceRoot))
+              continue;
+            log.trace("Transmitting Categories {}", sourceRoot.refId);
+            targetDao.insert(sourceRoot);
+          }
+        }
+      }
+      var sourceRoots = sourceDao.getRootCategories(modelType);
     }
   }
 
@@ -291,6 +321,33 @@ public class Main {
     }
   }
 
+  private static void transmitFlows(Set<Flow> productFlows) {
+    var sourceDao = new FlowDao(inputDb);
+    var targetDao = new FlowDao(targetDb);
+    var elementaryFlows = sourceDao.getAll()
+            .stream()
+            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
+            .collect(Collectors.toList());
+    for (var flow : elementaryFlows) {
+      targetDao.insert(flow);
+    }
+    for (var flow : productFlows) {
+      targetDao.insert(flow);
+    }
+  }
+
+  private static void updateProcess(Process process, HashMap<String, Process> unitToSystemMap) {
+    for (var exchange : process.exchanges) {
+      if (exchange.defaultProviderId == 0)
+        continue;
+      var defaultProvider = targetDb.get(Process.class, exchange.defaultProviderId);
+      if (defaultProvider == null)
+        continue;
+      if (unitToSystemMap.containsKey(defaultProvider.refId))
+        exchange.defaultProviderId = unitToSystemMap.get(defaultProvider.refId).id;
+    }
+  }
+
   private static Set<Process> getForegroundProcesses(Set<Process> processes, Set<Process> foregroundProcesses) {
     var inputProcesses = processes
             .stream()
@@ -320,6 +377,19 @@ public class Main {
             .filter(Objects::nonNull)
             .filter(p -> p.lastChange < referenceDate)
             .collect(Collectors.toSet());
+  }
+
+  private static Set<Category> getParentCategories(Set<Category> categories, Set<Category> usedCategories) {
+    var parentCategories = categories
+            .stream()
+            .map(c -> c.category)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+    parentCategories.removeIf(usedCategories::contains);
+    if (parentCategories.isEmpty())
+      return usedCategories;
+    usedCategories.addAll(parentCategories);
+    return getParentCategories(parentCategories, usedCategories);
   }
 
   private static UnitGroup clone(UnitGroup from) {
