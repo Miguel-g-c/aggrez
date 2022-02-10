@@ -245,12 +245,12 @@ public class Main {
           for (var sourceRoot : sourceRoots) {
             if (!processCategories.contains(sourceRoot))
               continue;
+            filterOutUnusedCategoriesOf(sourceRoot, processCategories);
             log.trace("Transmitting Categories {}", sourceRoot.refId);
             targetDao.insert(sourceRoot);
           }
         }
       }
-      var sourceRoots = sourceDao.getRootCategories(modelType);
     }
   }
 
@@ -347,6 +347,22 @@ public class Main {
       return usedCategories;
     usedCategories.addAll(parentCategories);
     return getParentCategories(parentCategories, usedCategories);
+  }
+
+  private static void filterOutUnusedCategoriesOf(Category category, Set<Category> usedCategories) {
+    if (category.childCategories.isEmpty())
+      return;
+    var newChildren = category.childCategories
+            .stream()
+            .filter(usedCategories::contains)
+            .collect(Collectors.toList());
+    if (newChildren.isEmpty())
+      return;
+    category.childCategories.clear();
+    category.childCategories.addAll(newChildren);
+    for (var cat : category.childCategories) {
+      filterOutUnusedCategoriesOf(cat, usedCategories);
+    }
   }
 
   private static UnitGroup clone(UnitGroup from) {
