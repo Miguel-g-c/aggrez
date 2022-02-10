@@ -356,8 +356,10 @@ public class Main {
             .stream()
             .filter(usedCategories::contains)
             .collect(Collectors.toList());
-    if (newChildren.isEmpty())
+    if (newChildren.isEmpty()) {
+      category.childCategories.clear();
       return;
+    }
     category.childCategories.clear();
     category.childCategories.addAll(newChildren);
     for (var cat : category.childCategories) {
