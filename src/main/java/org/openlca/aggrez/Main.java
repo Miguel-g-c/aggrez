@@ -158,6 +158,14 @@ public class Main {
     var executor = calculationQueue.shutdown();
     executor.shutdownNow();
 
+    // adding new elementary flows from system processes
+    var systemProcessFlows = systemProcesses
+            .stream()
+            .flatMap(p -> p.exchanges.stream())
+            .map(e -> e.flow)
+            .collect(Collectors.toSet());
+    usedFlows.addAll(systemProcessFlows);
+
     // import data
     log.info("transmit reference data");
     transmitCategories(usedProcessCategories);
