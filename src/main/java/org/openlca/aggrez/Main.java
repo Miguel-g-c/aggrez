@@ -197,7 +197,27 @@ public class Main {
 
     // update and transmit product systems
     log.info("transmit product systems");
+    var usedProcessIds = usedProcesses
+            .stream()
+            .map(p -> p.id)
+            .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
+      var processIds = productSystem.processes
+              .stream()
+              .filter(usedProcessIds::contains)
+              .collect(Collectors.toSet());
+      productSystem.processes.clear();
+      productSystem.processes.addAll(processIds);
+      var processLinks = productSystem.processLinks
+               .stream()
+               .filter(pl -> {
+                 if (pl.hasProcessProvider())
+                   return usedProcessIds.contains(pl.providerId);
+                 return usedProcessIds.contains(pl.processId);
+               })
+              .collect(Collectors.toList());
+      productSystem.processLinks.clear();
+      productSystem.processLinks.addAll(processLinks);
       log.trace("Transmitting ProductSystem {}", productSystem.refId);
       targetDb.insert(productSystem);
     }
