@@ -99,13 +99,12 @@ public class Main {
     var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
     usedProcesses.addAll(backgroundProcesses);
 
-    // filter out unused technosphere flows
-    log.info("filter out unused technosphere flows");
-    var usedProductFlows = usedProcesses
+    // filter out unused flows
+    log.info("filter out unused flows");
+    var usedFlows = usedProcesses
             .stream()
             .flatMap(p -> p.exchanges.stream())
             .map(e -> e.flow)
-            .filter(f -> f.flowType != FlowType.ELEMENTARY_FLOW)
             .collect(Collectors.toSet());
 
     // filter out unused categories
@@ -173,7 +172,7 @@ public class Main {
     transmitGlobalParameters();
 
     log.info("transmit flows");
-    transmitFlows(usedProductFlows);
+    transmitFlows(usedFlows);
 
     log.info("transmit impact assessment methods");
     transmit(ImpactCategory.class);
@@ -201,6 +200,11 @@ public class Main {
             .stream()
             .map(p -> p.id)
             .collect(Collectors.toSet());
+    var usedFlowsIds = usedFlows
+            .stream()
+            .filter(f -> f.flowType != FlowType.ELEMENTARY_FLOW)
+            .map(f -> f.id)
+            .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
       var processIds = productSystem.processes
               .stream()
@@ -210,11 +214,7 @@ public class Main {
       productSystem.processes.addAll(processIds);
       var processLinks = productSystem.processLinks
                .stream()
-               .filter(pl -> {
-                 if (pl.hasProcessProvider())
-                   return usedProcessIds.contains(pl.providerId);
-                 return usedProcessIds.contains(pl.processId);
-               })
+               .filter(pl -> usedFlowsIds.contains(pl.flowId))
               .collect(Collectors.toList());
       productSystem.processLinks.clear();
       productSystem.processLinks.addAll(processLinks);
@@ -310,18 +310,9 @@ public class Main {
     }
   }
 
-  private static void transmitFlows(Set<Flow> productFlows) {
-    var sourceDao = new FlowDao(inputDb);
-    var targetDao = new FlowDao(targetDb);
-    var elementaryFlows = sourceDao.getAll()
-            .stream()
-            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
-            .collect(Collectors.toList());
-    for (var flow : elementaryFlows) {
-      targetDao.insert(flow);
-    }
-    for (var flow : productFlows) {
-      targetDao.insert(flow);
+  private static void transmitFlows(Set<Flow> usedFlows) {
+    for (var flow : usedFlows) {
+      targetDb.insert(flow);
     }
   }
 
