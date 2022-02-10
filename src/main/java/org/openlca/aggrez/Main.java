@@ -208,10 +208,9 @@ public class Main {
             .stream()
             .map(p -> p.id)
             .collect(Collectors.toSet());
-    var usedFlowsIds = usedFlows
+    var systemProcessIds = systemProcesses
             .stream()
-            .filter(f -> f.flowType != FlowType.ELEMENTARY_FLOW)
-            .map(f -> f.id)
+            .map(p -> p.id)
             .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
       var processIds = productSystem.processes
@@ -221,8 +220,14 @@ public class Main {
       productSystem.processes.clear();
       productSystem.processes.addAll(processIds);
       var processLinks = productSystem.processLinks
-               .stream()
-               .filter(pl -> usedFlowsIds.contains(pl.flowId))
+              .stream()
+              .filter(pl -> {
+                if (pl.hasProcessProvider())
+                  return productSystem.processes.contains(pl.providerId);
+                if (systemProcessIds.contains(pl.providerId))
+                  return false;
+                return productSystem.processes.contains(pl.processId);
+              })
               .collect(Collectors.toList());
       productSystem.processLinks.clear();
       productSystem.processLinks.addAll(processLinks);
