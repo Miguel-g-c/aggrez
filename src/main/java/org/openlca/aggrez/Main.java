@@ -6,6 +6,7 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
@@ -16,6 +17,7 @@ import org.openlca.core.model.Process;
 import org.openlca.core.results.SimpleResult;
 import org.openlca.core.results.SystemProcess;
 import org.openlca.util.Dirs;
+import org.openlca.util.ParameterRedefSets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -92,29 +94,12 @@ public class Main {
     var unmodifiedProcesses = new ArrayList<Process>();
     var productSystems = inputDb.allOf(ProductSystem.class);
     var usedProcesses = productSystems
-            .stream()
-            .map(ps -> ps.referenceProcess)
-            .collect(Collectors.toSet());
+        .stream()
+        .map(ps -> ps.referenceProcess)
+        .collect(Collectors.toSet());
     usedProcesses = getForegroundProcesses(usedProcesses, usedProcesses);
     var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
     usedProcesses.addAll(backgroundProcesses);
-
-    // filter out unused technosphere flows
-    log.info("filter out unused technosphere flows");
-    var usedProductFlows = usedProcesses
-            .stream()
-            .flatMap(p -> p.exchanges.stream())
-            .map(e -> e.flow)
-            .filter(f -> f.flowType != FlowType.ELEMENTARY_FLOW)
-            .collect(Collectors.toSet());
-
-    // filter out unused categories
-    log.info("filter out unused categories");
-    var usedProcessCategories = usedProcesses
-            .stream()
-            .map(p -> p.category)
-            .collect(Collectors.toSet());
-    usedProcessCategories = getParentCategories(usedProcessCategories, usedProcessCategories);
 
     // aggregate processes
     log.info("aggregate processes");
@@ -142,11 +127,10 @@ public class Main {
       var process = calcToSetupMap.get(calcId).process();
       log.trace("aggregate process: {}", process.refId);
       var systemProcess = SystemProcess.create(
-              inputDb,
-              calcToSetupMap.get(calcId),
-              results,
-              process.name
-      );
+          inputDb,
+          calcToSetupMap.get(calcId),
+          results,
+          process.name);
       systemProcess.id = process.id;
       systemProcess.refId = process.refId;
       systemProcess.category = process.category;
@@ -159,9 +143,52 @@ public class Main {
     var executor = calculationQueue.shutdown();
     executor.shutdownNow();
 
+    // filter out unused flows
+    log.info("filter out unused flows");
+    var usedFlows = usedProcesses
+        .stream()
+        .flatMap(p -> p.exchanges.stream())
+        .map(e -> e.flow)
+        .collect(Collectors.toSet());
+    var systemProcessFlows = systemProcesses
+        .stream()
+        .flatMap(p -> p.exchanges.stream())
+        .map(e -> e.flow)
+        .collect(Collectors.toSet());
+    usedFlows.addAll(systemProcessFlows);
+
+    // filter out unused categories
+    log.info("filter out unused categories");
+    var usedProcessCategories = usedProcesses
+        .stream()
+        .map(p -> p.category)
+        .collect(Collectors.toSet());
+    usedProcessCategories = getParentCategories(usedProcessCategories, usedProcessCategories);
+    var usedFlowCategories = usedFlows
+        .stream()
+        .map(f -> f.category)
+        .collect(Collectors.toSet());
+    usedFlowCategories = getParentCategories(usedFlowCategories, usedFlowCategories);
+
+    // filter out unused impact factors
+    log.info("filter out unused impact factors");
+    var impactCategories = inputDb.allOf(ImpactCategory.class);
+    var usedElementaryFlows = usedFlows
+        .stream()
+        .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
+        .collect(Collectors.toList());
+    impactCategories.forEach(impactCategory -> {
+      var newImpactFactors = impactCategory.impactFactors
+          .stream()
+          .filter(factor -> usedElementaryFlows.contains(factor.flow))
+          .collect(Collectors.toList());
+      impactCategory.impactFactors.clear();
+      impactCategory.impactFactors.addAll(newImpactFactors);
+    });
+
     // import data
     log.info("transmit reference data");
-    transmitCategories(usedProcessCategories);
+    transmitCategories(usedProcessCategories, usedFlowCategories);
     var requirePropertyUpdate = new HashMap<String, UnitGroup>();
     transmitUnitGroups(requirePropertyUpdate);
     transmit(FlowProperty.class);
@@ -173,10 +200,12 @@ public class Main {
     transmitGlobalParameters();
 
     log.info("transmit flows");
-    transmitFlows(usedProductFlows);
+    transmitFlows(usedFlows);
 
     log.info("transmit impact assessment methods");
-    transmit(ImpactCategory.class);
+    for (var impactCategory : impactCategories) {
+      targetDb.insert(impactCategory);
+    }
     transmit(ImpactMethod.class);
 
     log.info("transmit processes");
@@ -197,7 +226,40 @@ public class Main {
 
     // update and transmit product systems
     log.info("transmit product systems");
+    var usedProcessIds = Stream.concat(
+        unmodifiedProcesses.stream(),
+        systemProcesses.stream())
+        .map(p -> p.id)
+        .collect(Collectors.toSet());
+    var systemProcessIds = systemProcesses
+        .stream()
+        .map(p -> p.id)
+        .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
+      var processIds = productSystem.processes
+          .stream()
+          .filter(usedProcessIds::contains)
+          .collect(Collectors.toSet());
+      productSystem.processes.clear();
+      productSystem.processes.addAll(processIds);
+      var processLinks = productSystem.processLinks
+          .stream()
+          .filter(pl -> {
+            if (pl.hasProcessProvider())
+              return !(systemProcessIds.contains(pl.providerId)
+                  && systemProcessIds.contains(pl.processId));
+            return true;
+          })
+          .filter(pl -> {
+            if (pl.hasProcessProvider())
+              return productSystem.processes.contains(pl.providerId)
+                  && productSystem.processes.contains(pl.processId);
+            return productSystem.processes.contains(pl.processId);
+          })
+          .collect(Collectors.toList());
+      productSystem.processLinks.clear();
+      productSystem.processLinks.addAll(processLinks);
+      productSystem.parameterSets.add(ParameterRedefSets.allOf(targetDb, productSystem));
       log.trace("Transmitting ProductSystem {}", productSystem.refId);
       targetDb.insert(productSystem);
     }
@@ -228,14 +290,24 @@ public class Main {
     }
   }
 
-  private static void transmitCategories(Set<Category> processCategories) {
+  private static void transmitCategories(Set<Category> processCategories, Set<Category> flowCategories) {
     var sourceDao = new CategoryDao(inputDb);
     var targetDao = new CategoryDao(targetDb);
     for (var modelType : ModelType.categorized()) {
       switch (modelType) {
-        case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD, FLOW, PRODUCT_SYSTEM -> {
+        case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD, PRODUCT_SYSTEM -> {
           var sourceRoots = sourceDao.getRootCategories(modelType);
           for (var sourceRoot : sourceRoots) {
+            log.trace("Transmitting Categories {}", sourceRoot.refId);
+            targetDao.insert(sourceRoot);
+          }
+        }
+        case FLOW -> {
+          var sourceRoots = sourceDao.getRootCategories(modelType);
+          for (var sourceRoot : sourceRoots) {
+            if (!flowCategories.contains(sourceRoot))
+              continue;
+            filterOutUnusedCategoriesOf(sourceRoot, flowCategories);
             log.trace("Transmitting Categories {}", sourceRoot.refId);
             targetDao.insert(sourceRoot);
           }
@@ -290,32 +362,23 @@ public class Main {
     }
   }
 
-  private static void transmitFlows(Set<Flow> productFlows) {
-    var sourceDao = new FlowDao(inputDb);
-    var targetDao = new FlowDao(targetDb);
-    var elementaryFlows = sourceDao.getAll()
-            .stream()
-            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
-            .collect(Collectors.toList());
-    for (var flow : elementaryFlows) {
-      targetDao.insert(flow);
-    }
-    for (var flow : productFlows) {
-      targetDao.insert(flow);
+  private static void transmitFlows(Set<Flow> usedFlows) {
+    for (var flow : usedFlows) {
+      targetDb.insert(flow);
     }
   }
 
   private static Set<Process> getForegroundProcesses(Set<Process> processes, Set<Process> foregroundProcesses) {
     var inputProcesses = processes
-            .stream()
-            .flatMap(p -> p.exchanges.stream())
-            .filter(e -> e.defaultProviderId != 0)
-            .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
-            .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
-            .map(e -> inputDb.get(Process.class, e.defaultProviderId))
-            .filter(Objects::nonNull)
-            .filter(p -> p.lastChange > referenceDate)
-            .collect(Collectors.toSet());
+        .stream()
+        .flatMap(p -> p.exchanges.stream())
+        .filter(e -> e.defaultProviderId != 0)
+        .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
+        .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
+        .map(e -> inputDb.get(Process.class, e.defaultProviderId))
+        .filter(Objects::nonNull)
+        .filter(p -> p.lastChange > referenceDate)
+        .collect(Collectors.toSet());
     inputProcesses.removeIf(foregroundProcesses::contains);
     if (inputProcesses.isEmpty())
       return foregroundProcesses;
@@ -325,23 +388,23 @@ public class Main {
 
   private static Set<Process> getFirstBackgroundProcessesOf(Set<Process> processes) {
     return processes
-            .stream()
-            .flatMap(p -> p.exchanges.stream())
-            .filter(e -> e.defaultProviderId != 0)
-            .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
-            .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
-            .map(e -> inputDb.get(Process.class, e.defaultProviderId))
-            .filter(Objects::nonNull)
-            .filter(p -> p.lastChange < referenceDate)
-            .collect(Collectors.toSet());
+        .stream()
+        .flatMap(p -> p.exchanges.stream())
+        .filter(e -> e.defaultProviderId != 0)
+        .filter(e -> e.flow.flowType != FlowType.ELEMENTARY_FLOW)
+        .filter(e -> e.isInput || e.flow.flowType == FlowType.WASTE_FLOW)
+        .map(e -> inputDb.get(Process.class, e.defaultProviderId))
+        .filter(Objects::nonNull)
+        .filter(p -> p.lastChange < referenceDate)
+        .collect(Collectors.toSet());
   }
 
   private static Set<Category> getParentCategories(Set<Category> categories, Set<Category> usedCategories) {
     var parentCategories = categories
-            .stream()
-            .map(c -> c.category)
-            .filter(Objects::nonNull)
-            .collect(Collectors.toSet());
+        .stream()
+        .map(c -> c.category)
+        .filter(Objects::nonNull)
+        .collect(Collectors.toSet());
     parentCategories.removeIf(usedCategories::contains);
     if (parentCategories.isEmpty())
       return usedCategories;
@@ -353,9 +416,9 @@ public class Main {
     if (category.childCategories.isEmpty())
       return;
     var newChildren = category.childCategories
-            .stream()
-            .filter(usedCategories::contains)
-            .collect(Collectors.toList());
+        .stream()
+        .filter(usedCategories::contains)
+        .collect(Collectors.toList());
     if (newChildren.isEmpty()) {
       category.childCategories.clear();
       return;
