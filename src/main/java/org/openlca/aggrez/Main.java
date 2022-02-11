@@ -211,14 +211,11 @@ public class Main {
             .stream()
             .map(p -> p.id)
             .collect(Collectors.toSet());
-    var systemProcessIds = systemProcesses
-            .stream()
-            .map(p -> p.id)
-            .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
       var processIds = productSystem.processes
               .stream()
               .filter(usedProcessIds::contains)
+              .filter(id -> targetDb.get(Process.class, id) != null)
               .collect(Collectors.toSet());
       productSystem.processes.clear();
       productSystem.processes.addAll(processIds);
@@ -226,9 +223,8 @@ public class Main {
               .stream()
               .filter(pl -> {
                 if (pl.hasProcessProvider())
-                  return productSystem.processes.contains(pl.providerId);
-                if (systemProcessIds.contains(pl.providerId))
-                  return false;
+                  return productSystem.processes.contains(pl.providerId)
+                          && productSystem.processes.contains(pl.processId);
                 return productSystem.processes.contains(pl.processId);
               })
               .collect(Collectors.toList());
