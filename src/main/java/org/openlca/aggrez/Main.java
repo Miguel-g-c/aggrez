@@ -229,6 +229,10 @@ public class Main {
             .stream()
             .map(p -> p.id)
             .collect(Collectors.toSet());
+    var systemProcessIds = systemProcesses
+            .stream()
+            .map(p -> p.id)
+            .collect(Collectors.toSet());
     for (var productSystem : productSystems) {
       var processIds = productSystem.processes
               .stream()
@@ -239,6 +243,12 @@ public class Main {
       productSystem.processes.addAll(processIds);
       var processLinks = productSystem.processLinks
               .stream()
+              .filter(pl -> {
+                if (pl.hasProcessProvider())
+                  return !(systemProcessIds.contains(pl.providerId)
+                          && systemProcessIds.contains(pl.processId));
+                return true;
+              })
               .filter(pl -> {
                 if (pl.hasProcessProvider())
                   return productSystem.processes.contains(pl.providerId)
