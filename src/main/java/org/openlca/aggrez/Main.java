@@ -169,6 +169,22 @@ public class Main {
             .collect(Collectors.toSet());
     usedFlowCategories = getParentCategories(usedFlowCategories, usedFlowCategories);
 
+    // filter out unused impact factors
+    log.info("filter out unused impact factors");
+    var impactCategories = inputDb.allOf(ImpactCategory.class);
+    var usedElementaryFlows = usedFlows
+            .stream()
+            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
+            .collect(Collectors.toList());
+    impactCategories.forEach(impactCategory -> {
+      var newImpactFactors = impactCategory.impactFactors
+              .stream()
+              .filter(factor -> usedElementaryFlows.contains(factor.flow))
+              .collect(Collectors.toList());
+      impactCategory.impactFactors.clear();
+      impactCategory.impactFactors.addAll(newImpactFactors);
+    });
+
     // import data
     log.info("transmit reference data");
     transmitCategories(usedProcessCategories, usedFlowCategories);
@@ -186,7 +202,9 @@ public class Main {
     transmitFlows(usedFlows);
 
     log.info("transmit impact assessment methods");
-    transmit(ImpactCategory.class);
+    for (var impactCategory : impactCategories) {
+      targetDb.insert(impactCategory);
+    }
     transmit(ImpactMethod.class);
 
     log.info("transmit processes");
