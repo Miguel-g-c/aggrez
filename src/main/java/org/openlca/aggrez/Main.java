@@ -162,11 +162,13 @@ public class Main {
     var usedProcessCategories = usedProcesses
         .stream()
         .map(p -> p.category)
+        .filter(Objects::nonNull)
         .collect(Collectors.toSet());
     usedProcessCategories = getParentCategories(usedProcessCategories, usedProcessCategories);
     var usedFlowCategories = usedFlows
         .stream()
         .map(f -> f.category)
+        .filter(Objects::nonNull)
         .collect(Collectors.toSet());
     usedFlowCategories = getParentCategories(usedFlowCategories, usedFlowCategories);
 
@@ -194,7 +196,18 @@ public class Main {
     transmit(FlowProperty.class);
     updateUnitGroups(requirePropertyUpdate);
     transmit(Location.class);
-    transmit(Currency.class);
+    var currencies = inputDb.allOf(Currency.class);
+    var referenceCurrency = currencies
+        .stream()
+        .filter(c -> c.referenceCurrency == c)
+        .findFirst()
+        .orElseThrow();
+    targetDb.insert(referenceCurrency);
+    for (var currency : currencies) {
+      if (currency == referenceCurrency)
+        continue;
+      targetDb.insert(currency);
+    }
 
     log.info("transmit global parameters");
     transmitGlobalParameters();
