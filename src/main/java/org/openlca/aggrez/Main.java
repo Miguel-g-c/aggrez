@@ -98,11 +98,13 @@ public class Main {
         .map(ps -> ps.referenceProcess)
         .collect(Collectors.toSet());
     usedProcesses = getForegroundProcesses(usedProcesses, usedProcesses);
+    log.info("there are {} foreground processes", usedProcesses.size());
     var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
     usedProcesses.addAll(backgroundProcesses);
+    log.info("there are {} total used processes", usedProcesses.size());
 
     // aggregate processes
-    log.info("aggregate processes");
+    log.info("aggregate {} processes", backgroundProcesses.size());
     for (var process : usedProcesses) {
       if (process.processType == ProcessType.LCI_RESULT) {
         unmodifiedProcesses.add(process);
@@ -221,7 +223,7 @@ public class Main {
     }
     transmit(ImpactMethod.class);
 
-    log.info("transmit processes");
+    log.info("transmit unmodified processes");
     for (var process : unmodifiedProcesses) {
       log.trace("Transmitting Process {}", process.refId);
       process.dqEntry = null;
@@ -232,6 +234,7 @@ public class Main {
       targetDb.insert(process);
     }
 
+    log.info("transmit system processes");
     for (var process : systemProcesses) {
       log.trace("Transmitting Process {}", process.refId);
       targetDb.insert(process);
@@ -308,7 +311,8 @@ public class Main {
     var targetDao = new CategoryDao(targetDb);
     for (var modelType : ModelType.categorized()) {
       switch (modelType) {
-        case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD, PRODUCT_SYSTEM -> {
+        case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD,
+            PRODUCT_SYSTEM -> {
           var sourceRoots = sourceDao.getRootCategories(modelType);
           for (var sourceRoot : sourceRoots) {
             log.trace("Transmitting Categories {}", sourceRoot.refId);
