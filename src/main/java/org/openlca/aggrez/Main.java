@@ -71,141 +71,141 @@ public class Main {
     Upgrades.on(targetDb);
 
     // filter out unused processes
-    log.info("filter out unused processes");
-    var processesToAggregate = new ArrayList<Process>();
-    var unmodifiedProcesses = new ArrayList<Process>();
-    var productSystems = inputDb.allOf(ProductSystem.class);
-    var usedProcesses = productSystems
-        .stream()
-        .map(ps -> ps.referenceProcess)
-        .collect(Collectors.toSet());
-    usedProcesses = getForegroundProcesses(usedProcesses, usedProcesses);
-    log.info("there are {} foreground processes", usedProcesses.size());
-    var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
-    usedProcesses.addAll(backgroundProcesses);
-    log.info("there are {} total used processes", usedProcesses.size());
-
-    // classify processes
-    log.info("there are {} processes to aggregate", backgroundProcesses.size());
-    for (var process : usedProcesses) {
-      if (process.processType == ProcessType.LCI_RESULT) {
-        unmodifiedProcesses.add(process);
-        continue;
-      }
-      if (process.lastChange > referenceDate) {
-        unmodifiedProcesses.add(process);
-        continue;
-      }
-      processesToAggregate.add(process);
-    }
-
-    // import reference data
-    log.info("transmit reference data");
-    transmitReferenceCategories();
-    var requirePropertyUpdate = new HashMap<String, UnitGroup>();
-    transmitUnitGroups(requirePropertyUpdate);
-    transmit(FlowProperty.class);
-    updateUnitGroups(requirePropertyUpdate);
-    transmit(Location.class);
-    var currencies = inputDb.allOf(Currency.class);
-    var referenceCurrency = currencies
-        .stream()
-        .filter(c -> c.referenceCurrency == c)
-        .findFirst()
-        .orElseThrow();
-    targetDb.insert(referenceCurrency);
-    for (var currency : currencies) {
-      if (currency == referenceCurrency)
-        continue;
-      targetDb.insert(currency);
-    }
-
-    // import global parameters
-    log.info("transmit global parameters");
-    transmitGlobalParameters();
-
-    // import processes
-    log.info("Transmit unmodified processes");
-    for (var process : unmodifiedProcesses) {
-      log.info("Transmitting Process {}", process.refId);
-      process.dqEntry = null;
-      process.dqSystem = null;
-      process.exchangeDqSystem = null;
-      process.socialDqSystem = null;
-      process.documentation = null;
-      transmitProcess(process);
-    }
-    log.info("Aggregating and transmitting background processes");
-    for (var process : processesToAggregate) {
-      log.info("Transmitting Process {}", process.refId);
-      transmitProcess(aggregate(process));
-    }
-
-    // filter out unused impact factors
-    log.info("filter out unused impact factors");
-    var impactCategories = inputDb.allOf(ImpactCategory.class);
-    var usedElementaryFlows = targetDb
-            .allOf(Flow.class)
-            .stream()
-            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
-            .collect(Collectors.toList());
-    impactCategories.forEach(impactCategory -> {
-      var newImpactFactors = impactCategory.impactFactors
-              .stream()
-              .filter(factor -> usedElementaryFlows.contains(factor.flow))
-              .collect(Collectors.toList());
-      impactCategory.impactFactors.clear();
-      impactCategory.impactFactors.addAll(newImpactFactors);
-    });
-
-    log.info("transmit impact assessment methods");
-    for (var impactCategory : impactCategories) {
-      targetDb.insert(impactCategory);
-    }
-    transmit(ImpactMethod.class);
-
-    // update and transmit product systems
-    log.info("transmit product systems");
-    var usedProcessIds = Stream.concat(
-        unmodifiedProcesses.stream(),
-        processesToAggregate.stream())
-        .map(p -> p.id)
-        .collect(Collectors.toSet());
-    var systemProcessIds = processesToAggregate
-        .stream()
-        .map(p -> p.id)
-        .collect(Collectors.toSet());
-    for (var productSystem : productSystems) {
-      var processIds = productSystem.processes
+    try {
+      log.info("filter out unused processes");
+      var processesToAggregate = new ArrayList<Process>();
+      var unmodifiedProcesses = new ArrayList<Process>();
+      var productSystems = inputDb.allOf(ProductSystem.class);
+      var usedProcesses = productSystems
           .stream()
-          .filter(usedProcessIds::contains)
+          .map(ps -> ps.referenceProcess)
           .collect(Collectors.toSet());
-      productSystem.processes.clear();
-      productSystem.processes.addAll(processIds);
-      var processLinks = productSystem.processLinks
+      usedProcesses = getForegroundProcesses(usedProcesses, usedProcesses);
+      log.info("there are {} foreground processes", usedProcesses.size());
+      var backgroundProcesses = getFirstBackgroundProcessesOf(usedProcesses);
+      usedProcesses.addAll(backgroundProcesses);
+      log.info("there are {} total used processes", usedProcesses.size());
+
+      // classify processes
+      log.info("there are {} processes to aggregate", backgroundProcesses.size());
+      for (var process : usedProcesses) {
+        if (process.processType == ProcessType.LCI_RESULT) {
+          unmodifiedProcesses.add(process);
+          continue;
+        }
+        if (process.lastChange > referenceDate) {
+          unmodifiedProcesses.add(process);
+          continue;
+        }
+        processesToAggregate.add(process);
+      }
+
+      // import reference data
+      log.info("transmit reference data");
+      transmitReferenceCategories();
+      var requirePropertyUpdate = new HashMap<String, UnitGroup>();
+      transmitUnitGroups(requirePropertyUpdate);
+      transmit(FlowProperty.class);
+      updateUnitGroups(requirePropertyUpdate);
+      transmit(Location.class);
+      var currencies = inputDb.allOf(Currency.class);
+      var referenceCurrency = currencies
           .stream()
-          .filter(pl -> {
-            if (pl.hasProcessProvider())
-              return !(systemProcessIds.contains(pl.providerId)
-                  && systemProcessIds.contains(pl.processId));
-            return true;
-          })
-          .filter(pl -> {
-            if (pl.hasProcessProvider())
-              return productSystem.processes.contains(pl.providerId)
-                  && productSystem.processes.contains(pl.processId);
-            return productSystem.processes.contains(pl.processId);
-          })
-          .collect(Collectors.toList());
-      productSystem.processLinks.clear();
-      productSystem.processLinks.addAll(processLinks);
-      productSystem.parameterSets.add(ParameterRedefSets.allOf(targetDb, productSystem));
-      log.trace("Transmitting ProductSystem {}", productSystem.refId);
-      targetDb.insert(productSystem);
-    }
+          .filter(c -> c.referenceCurrency == c)
+          .findFirst()
+          .orElseThrow();
+      targetDb.insert(referenceCurrency);
+      for (var currency : currencies) {
+        if (currency == referenceCurrency)
+          continue;
+        targetDb.insert(currency);
+      }
+
+      // import global parameters
+      log.info("transmit global parameters");
+      transmitGlobalParameters();
+
+      // import processes
+      log.info("Transmit unmodified processes");
+      for (var process : unmodifiedProcesses) {
+        log.info("Transmitting Process {}", process.refId);
+        process.dqEntry = null;
+        process.dqSystem = null;
+        process.exchangeDqSystem = null;
+        process.socialDqSystem = null;
+        process.documentation = null;
+        transmitProcess(process);
+      }
+      log.info("Aggregating and transmitting background processes");
+      for (var process : processesToAggregate) {
+        log.info("Transmitting Process {}", process.refId);
+        transmitProcess(aggregate(process));
+      }
+
+      // filter out unused impact factors
+      log.info("filter out unused impact factors");
+      var impactCategories = inputDb.allOf(ImpactCategory.class);
+      var usedElementaryFlows = targetDb
+              .allOf(Flow.class)
+              .stream()
+              .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
+              .collect(Collectors.toList());
+      impactCategories.forEach(impactCategory -> {
+        var newImpactFactors = impactCategory.impactFactors
+                .stream()
+                .filter(factor -> usedElementaryFlows.contains(factor.flow))
+                .collect(Collectors.toList());
+        impactCategory.impactFactors.clear();
+        impactCategory.impactFactors.addAll(newImpactFactors);
+      });
+
+      log.info("transmit impact assessment methods");
+      for (var impactCategory : impactCategories) {
+        targetDb.insert(impactCategory);
+      }
+      transmit(ImpactMethod.class);
+
+      // update and transmit product systems
+      log.info("transmit product systems");
+      var usedProcessIds = Stream.concat(
+          unmodifiedProcesses.stream(),
+          processesToAggregate.stream())
+          .map(p -> p.id)
+          .collect(Collectors.toSet());
+      var systemProcessIds = processesToAggregate
+          .stream()
+          .map(p -> p.id)
+          .collect(Collectors.toSet());
+      for (var productSystem : productSystems) {
+        var processIds = productSystem.processes
+            .stream()
+            .filter(usedProcessIds::contains)
+            .collect(Collectors.toSet());
+        productSystem.processes.clear();
+        productSystem.processes.addAll(processIds);
+        var processLinks = productSystem.processLinks
+            .stream()
+            .filter(pl -> {
+              if (pl.hasProcessProvider())
+                return !(systemProcessIds.contains(pl.providerId)
+                    && systemProcessIds.contains(pl.processId));
+              return true;
+            })
+            .filter(pl -> {
+              if (pl.hasProcessProvider())
+                return productSystem.processes.contains(pl.providerId)
+                    && productSystem.processes.contains(pl.processId);
+              return productSystem.processes.contains(pl.processId);
+            })
+            .collect(Collectors.toList());
+        productSystem.processLinks.clear();
+        productSystem.processLinks.addAll(processLinks);
+        productSystem.parameterSets.add(ParameterRedefSets.allOf(targetDb, productSystem));
+        log.trace("Transmitting ProductSystem {}", productSystem.refId);
+        targetDb.insert(productSystem);
+      }
 
     // Backup database
-    try {
       log.info("export database to: {}", target);
       Derby.zip(targetDbDir, target);
       log.info("drop temporary database: {}", inputDbDir);
@@ -215,7 +215,10 @@ public class Main {
       targetDb.close();
       Dirs.delete(targetDbDir);
       log.info("all done");
+
     } catch (Exception e) {
+      Dirs.delete(inputDbDir);
+      Dirs.delete(targetDbDir);
       log.error("failed to finish zolca file", e);
     }
   }
