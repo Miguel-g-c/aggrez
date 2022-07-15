@@ -10,11 +10,10 @@ import java.util.stream.Stream;
 
 import org.openlca.core.database.*;
 import org.openlca.core.database.upgrades.Upgrades;
-import org.openlca.core.math.CalculationQueue;
+import org.openlca.core.math.SystemCalculator;
 import org.openlca.core.model.*;
 import org.openlca.core.model.Currency;
 import org.openlca.core.model.Process;
-import org.openlca.core.results.SimpleResult;
 import org.openlca.core.results.SystemProcess;
 import org.openlca.util.Dirs;
 import org.openlca.util.ParameterRedefSets;
@@ -27,7 +26,6 @@ public class Main {
   private static Derby inputDb;
   private static Derby targetDb;
   private static long referenceDate = 0;
-  private static int threads = 2;
 
   public static void main(String[] args) {
 
@@ -45,23 +43,9 @@ public class Main {
       if (flag == null)
         continue;
       switch (flag) {
-        case "-src":
-          input = inputFileOf(arg);
-          break;
-        case "-dest":
-          target = targetFileOf(arg);
-          break;
-        case "-from":
-          referenceDate = referenceDateOf(arg);
-          break;
-        case "-threads":
-          try {
-            threads = Integer.parseInt(arg);
-          } catch (NumberFormatException e) {
-            log.error("invalid number of threads provided: {}", arg);
-            return;
-          }
-          break;
+        case "-src" -> input = inputFileOf(arg);
+        case "-dest" -> target = targetFileOf(arg);
+        case "-from" -> referenceDate = referenceDateOf(arg);
       }
     }
 
@@ -88,9 +72,7 @@ public class Main {
 
     // filter out unused processes
     log.info("filter out unused processes");
-    var calculationQueue = new CalculationQueue(inputDb, threads);
-    var calcToSetupMap = new HashMap<String, CalculationSetup>();
-    var systemProcesses = new ArrayList<Process>();
+    var processesToAggregate = new ArrayList<Process>();
     var unmodifiedProcesses = new ArrayList<Process>();
     var productSystems = inputDb.allOf(ProductSystem.class);
     var usedProcesses = productSystems
@@ -103,8 +85,8 @@ public class Main {
     usedProcesses.addAll(backgroundProcesses);
     log.info("there are {} total used processes", usedProcesses.size());
 
-    // aggregate processes
-    log.info("aggregate {} processes", backgroundProcesses.size());
+    // classify processes
+    log.info("there are {} processes to aggregate", backgroundProcesses.size());
     for (var process : usedProcesses) {
       if (process.processType == ProcessType.LCI_RESULT) {
         unmodifiedProcesses.add(process);
@@ -114,85 +96,12 @@ public class Main {
         unmodifiedProcesses.add(process);
         continue;
       }
-      var setup = CalculationSetup.simple(process);
-      var calcState = calculationQueue.schedule(setup);
-      calcToSetupMap.put(calcState.id(), setup);
+      processesToAggregate.add(process);
     }
-    for (var calcId : calcToSetupMap.keySet()) {
-      var isReady = false;
-      CalculationQueue.State state = null;
-      while (!isReady) {
-        state = calculationQueue.get(calcId);
-        isReady = state.isReady();
-      }
-      var results = (SimpleResult) state.result();
-      var process = calcToSetupMap.get(calcId).process();
-      log.trace("aggregate process: {}", process.refId);
-      var systemProcess = SystemProcess.create(
-          inputDb,
-          calcToSetupMap.get(calcId),
-          results,
-          process.name);
-      systemProcess.id = process.id;
-      systemProcess.refId = process.refId;
-      systemProcess.category = process.category;
-      systemProcess.description = process.description;
-      systemProcess.location = process.location;
-      systemProcess.lastChange = new Date().getTime();
-      systemProcesses.add(systemProcess);
-      calculationQueue.dispose(calcId);
-    }
-    var executor = calculationQueue.shutdown();
-    executor.shutdownNow();
 
-    // filter out unused flows
-    log.info("filter out unused flows");
-    var usedFlows = usedProcesses
-        .stream()
-        .flatMap(p -> p.exchanges.stream())
-        .map(e -> e.flow)
-        .collect(Collectors.toSet());
-    var systemProcessFlows = systemProcesses
-        .stream()
-        .flatMap(p -> p.exchanges.stream())
-        .map(e -> e.flow)
-        .collect(Collectors.toSet());
-    usedFlows.addAll(systemProcessFlows);
-
-    // filter out unused categories
-    log.info("filter out unused categories");
-    var usedProcessCategories = usedProcesses
-        .stream()
-        .map(p -> p.category)
-        .filter(Objects::nonNull)
-        .collect(Collectors.toSet());
-    usedProcessCategories = getParentCategories(usedProcessCategories, usedProcessCategories);
-    var usedFlowCategories = usedFlows
-        .stream()
-        .map(f -> f.category)
-        .filter(Objects::nonNull)
-        .collect(Collectors.toSet());
-    usedFlowCategories = getParentCategories(usedFlowCategories, usedFlowCategories);
-
-    // filter out unused impact factors
-    log.info("filter out unused impact factors");
-    var impactCategories = inputDb.allOf(ImpactCategory.class);
-    var usedElementaryFlows = usedFlows
-        .stream()
-        .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
-        .collect(Collectors.toList());
-    impactCategories.forEach(impactCategory -> {
-      var newImpactFactors = impactCategory.impactFactors
-          .stream()
-          .filter(factor -> usedElementaryFlows.contains(factor.flow))
-          .collect(Collectors.toList());
-      impactCategory.impactFactors.clear();
-      impactCategory.impactFactors.addAll(newImpactFactors);
-    });
-
-    // import data
+    // import reference data
     log.info("transmit reference data");
-    transmitCategories(usedProcessCategories, usedFlowCategories);
+    transmitReferenceCategories();
     var requirePropertyUpdate = new HashMap<String, UnitGroup>();
     transmitUnitGroups(requirePropertyUpdate);
     transmit(FlowProperty.class);
@@ -211,11 +120,43 @@ public class Main {
       targetDb.insert(currency);
     }
 
+    // import global parameters
     log.info("transmit global parameters");
     transmitGlobalParameters();
 
-    log.info("transmit flows");
-    transmitFlows(usedFlows);
+    // import processes
+    log.info("Transmit unmodified processes");
+    for (var process : unmodifiedProcesses) {
+      log.info("Transmitting Process {}", process.refId);
+      process.dqEntry = null;
+      process.dqSystem = null;
+      process.exchangeDqSystem = null;
+      process.socialDqSystem = null;
+      process.documentation = null;
+      transmitProcess(process);
+    }
+    log.info("Aggregating and transmitting background processes");
+    for (var process : processesToAggregate) {
+      log.info("Transmitting Process {}", process.refId);
+      transmitProcess(aggregate(process));
+    }
+
+    // filter out unused impact factors
+    log.info("filter out unused impact factors");
+    var impactCategories = inputDb.allOf(ImpactCategory.class);
+    var usedElementaryFlows = targetDb
+            .allOf(Flow.class)
+            .stream()
+            .filter(f -> f.flowType == FlowType.ELEMENTARY_FLOW)
+            .collect(Collectors.toList());
+    impactCategories.forEach(impactCategory -> {
+      var newImpactFactors = impactCategory.impactFactors
+              .stream()
+              .filter(factor -> usedElementaryFlows.contains(factor.flow))
+              .collect(Collectors.toList());
+      impactCategory.impactFactors.clear();
+      impactCategory.impactFactors.addAll(newImpactFactors);
+    });
 
     log.info("transmit impact assessment methods");
     for (var impactCategory : impactCategories) {
@@ -223,31 +164,14 @@ public class Main {
     }
     transmit(ImpactMethod.class);
 
-    log.info("transmit unmodified processes");
-    for (var process : unmodifiedProcesses) {
-      log.trace("Transmitting Process {}", process.refId);
-      process.dqEntry = null;
-      process.dqSystem = null;
-      process.exchangeDqSystem = null;
-      process.socialDqSystem = null;
-      process.documentation = null;
-      targetDb.insert(process);
-    }
-
-    log.info("transmit system processes");
-    for (var process : systemProcesses) {
-      log.trace("Transmitting Process {}", process.refId);
-      targetDb.insert(process);
-    }
-
     // update and transmit product systems
     log.info("transmit product systems");
     var usedProcessIds = Stream.concat(
         unmodifiedProcesses.stream(),
-        systemProcesses.stream())
+        processesToAggregate.stream())
         .map(p -> p.id)
         .collect(Collectors.toSet());
-    var systemProcessIds = systemProcesses
+    var systemProcessIds = processesToAggregate
         .stream()
         .map(p -> p.id)
         .collect(Collectors.toSet());
@@ -296,46 +220,79 @@ public class Main {
     }
   }
 
+  private static Process aggregate(Process process) {
+    var setup = CalculationSetup.simple(process);
+    var calc = new SystemCalculator(inputDb);
+    var result = calc.calculateSimple(setup);
+    var systemProcess = SystemProcess.create(
+            inputDb,
+            setup,
+            result,
+            process.name);
+    systemProcess.id = process.id;
+    systemProcess.refId = process.refId;
+    systemProcess.category = process.category;
+    systemProcess.description = process.description;
+    systemProcess.location = process.location;
+    systemProcess.lastChange = new Date().getTime();
+    return systemProcess;
+  }
+
   private static <T extends RootEntity> void transmit(Class<T> entities) {
     var inputEntities = inputDb.allOf(entities);
     if (inputEntities.isEmpty())
       return;
     for (var entity : inputEntities) {
-      log.trace("Transmitting " + entities.getName() + " {}", entity.refId);
+      log.info("Transmitting " + entities.getName() + " {}", entity.refId);
       targetDb.insert(entity);
     }
   }
 
-  private static void transmitCategories(Set<Category> processCategories, Set<Category> flowCategories) {
+  private static void transmitProcess(Process process) {
+    transmitCategoriesOf(process);
+    transmitFlowsOf(process);
+    targetDb.insert(process);
+  }
+
+  private static void transmitCategoriesOf(Process process) {
+    if (process.category == null) return;
+    var categoryPath = getParentCategories(
+            process.category,
+            new ArrayList<>()
+    );
+    Collections.reverse(categoryPath);
+    for (var cat : categoryPath) {
+      var check = targetDb.get(Category.class, cat.refId);
+      if (check == null) {
+        log.info("Transmitting Category {} ", cat.refId);
+        targetDb.insert(cat);
+      }
+    }
+  }
+
+  private static void transmitFlowsOf(Process process) {
+    var processFlows = process.exchanges
+            .stream()
+            .map(e -> e.flow)
+            .collect(Collectors.toSet());
+    for (var flow : processFlows) {
+      var check = targetDb.get(Flow.class, flow.refId);
+      if (check == null) {
+        log.info("Transmitting Flow {} ", flow.refId);
+        targetDb.insert(flow);
+      }
+    }
+  }
+
+  private static void transmitReferenceCategories() {
     var sourceDao = new CategoryDao(inputDb);
     var targetDao = new CategoryDao(targetDb);
     for (var modelType : ModelType.categorized()) {
       switch (modelType) {
         case UNIT_GROUP, FLOW_PROPERTY, LOCATION, CURRENCY, PARAMETER, IMPACT_CATEGORY, IMPACT_METHOD,
-            PRODUCT_SYSTEM -> {
+                PRODUCT_SYSTEM -> {
           var sourceRoots = sourceDao.getRootCategories(modelType);
           for (var sourceRoot : sourceRoots) {
-            log.trace("Transmitting Categories {}", sourceRoot.refId);
-            targetDao.insert(sourceRoot);
-          }
-        }
-        case FLOW -> {
-          var sourceRoots = sourceDao.getRootCategories(modelType);
-          for (var sourceRoot : sourceRoots) {
-            if (!flowCategories.contains(sourceRoot))
-              continue;
-            filterOutUnusedCategoriesOf(sourceRoot, flowCategories);
-            log.trace("Transmitting Categories {}", sourceRoot.refId);
-            targetDao.insert(sourceRoot);
-          }
-        }
-        case PROCESS -> {
-          var sourceRoots = sourceDao.getRootCategories(modelType);
-          for (var sourceRoot : sourceRoots) {
-            if (!processCategories.contains(sourceRoot))
-              continue;
-            filterOutUnusedCategoriesOf(sourceRoot, processCategories);
-            log.trace("Transmitting Categories {}", sourceRoot.refId);
             targetDao.insert(sourceRoot);
           }
         }
@@ -379,12 +336,6 @@ public class Main {
     }
   }
 
-  private static void transmitFlows(Set<Flow> usedFlows) {
-    for (var flow : usedFlows) {
-      targetDb.insert(flow);
-    }
-  }
-
   private static Set<Process> getForegroundProcesses(Set<Process> processes, Set<Process> foregroundProcesses) {
     var inputProcesses = processes
         .stream()
@@ -416,35 +367,14 @@ public class Main {
         .collect(Collectors.toSet());
   }
 
-  private static Set<Category> getParentCategories(Set<Category> categories, Set<Category> usedCategories) {
-    var parentCategories = categories
-        .stream()
-        .map(c -> c.category)
-        .filter(Objects::nonNull)
-        .collect(Collectors.toSet());
-    parentCategories.removeIf(usedCategories::contains);
-    if (parentCategories.isEmpty())
-      return usedCategories;
-    usedCategories.addAll(parentCategories);
-    return getParentCategories(parentCategories, usedCategories);
-  }
-
-  private static void filterOutUnusedCategoriesOf(Category category, Set<Category> usedCategories) {
-    if (category.childCategories.isEmpty())
-      return;
-    var newChildren = category.childCategories
-        .stream()
-        .filter(usedCategories::contains)
-        .collect(Collectors.toList());
-    if (newChildren.isEmpty()) {
-      category.childCategories.clear();
-      return;
+  private static List<Category> getParentCategories(Category category, List<Category> acc) {
+    if (!acc.contains(category)) {
+      acc.add(category);
     }
-    category.childCategories.clear();
-    category.childCategories.addAll(newChildren);
-    for (var cat : category.childCategories) {
-      filterOutUnusedCategoriesOf(cat, usedCategories);
-    }
+    var parentCategory = category.category;
+    if (parentCategory == null) return acc;
+    acc.add(parentCategory);
+    return getParentCategories(parentCategory, acc);
   }
 
   private static UnitGroup clone(UnitGroup from) {
