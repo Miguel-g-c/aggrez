@@ -257,10 +257,10 @@ public class Main {
     targetDb.insert(process);
   }
 
-  private static void transmitCategoriesOf(Process process) {
-    if (process.category == null) return;
+  private static void transmitCategoriesOf(CategorizedEntity entity) {
+    if (entity.category == null) return;
     var categoryPath = getParentCategories(
-            process.category,
+            entity.category,
             new ArrayList<>()
     );
     Collections.reverse(categoryPath);
@@ -281,6 +281,7 @@ public class Main {
     for (var flow : processFlows) {
       var check = targetDb.get(Flow.class, flow.refId);
       if (check == null) {
+        transmitCategoriesOf(flow);
         log.info("Transmitting Flow {} ", flow.refId);
         targetDb.insert(flow);
       }
